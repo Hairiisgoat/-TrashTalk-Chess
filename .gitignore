@@ -1,0 +1,50 @@
+# ============================================================
+# 1. 密钥与环境文件（最高优先级隔离，防止泄露 API Key）
+# ============================================================
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# ============================================================
+# 2. Python 后端缓存与虚拟环境
+# ============================================================
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.log
+
+# ============================================================
+# 3. uni-app / HBuilderX / 微信小程序编译产物与私有配置
+# ============================================================
+node_modules/
+unpackage/
+dist/
+.hbuilderx/
+frontend/unpackage/
+frontend/node_modules/
+frontend/dist/
+frontend/.hbuilderx/
+front/unpackage/
+front/node_modules/
+front/dist/
+front/.hbuilderx/
+# 若 manifest.json 需隔离正式 AppID，可在 CI 注入或使用 local 配置
+project.private.config.json
+
+# ============================================================
+# 4. 操作系统与 IDE 杂项
+# ============================================================
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp

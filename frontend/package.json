@@ -1,0 +1,16 @@
+{
+  "name": "trashtalk-chess-frontend",
+  "version": "1.0.0",
+  "description": "uni-app (Vue 3) WeChat Mini Program & App for TrashTalk Chess",
+  "scripts": {
+    "test": "node --import ./tests/vue_loader.mjs --test tests/*.test.js"
+  },
+  "keywords": [
+    "uni-app",
+    "vue3",
+    "xiangqi",
+    "chess",
+    "alpha-beta"
+  ],
+  "license": "MIT"
+}
