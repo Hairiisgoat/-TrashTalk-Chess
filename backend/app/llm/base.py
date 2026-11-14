@@ -91,6 +91,21 @@ class BaseLLMClient(ABC):
         """Request structured move decision JSON from upstream LLM provider."""
 
     @abstractmethod
+    async def generate_text(
+        self,
+        *,
+        model_name: str,
+        system_prompt: str,
+        user_prompt: str,
+        history_messages: list[dict[str, str]] | None = None,
+        temperature: float = 0.6,
+        max_tokens: int = 700,
+        api_key_override: str | None = None,
+        base_url_override: str | None = None,
+    ) -> str:
+        """Request free-form text response (e.g. post-game coach analysis) from LLM."""
+
+    @abstractmethod
     async def test_connection(
         self,
         *,
@@ -115,51 +130,15 @@ class BaseLLMClient(ABC):
         )
         return api_key, normalize_base_url(raw_base)
 
-    async def _generate_openai_compatible_decision(
+    async def _post_openai_chat(
         self,
         *,
         label: str,
         model_name: str,
-        system_prompt: str,
-        user_prompt: str,
+        messages: list[dict[str, str]],
         temperature: float,
-        api_key_override: str | None = None,
-        base_url_override: str | None = None,
-    ) -> dict[str, Any]:
-        api_key, base_url = self._resolve_credentials(
-            api_key_override=api_key_override,
-            base_url_override=base_url_override,
-        )
-        url = f"{base_url}/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
-        payload: dict[str, Any] = {
-            "model": model_name,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "response_format": {"type": "json_object"},
-            "temperature": temperature,
-            "max_tokens": 300,
-        }
-        data = await self._post_json(url=url, headers=headers, payload=payload)
-        try:
-            content = data["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError) as exc:
-            raise LLMUpstreamError(
-                FallbackReason.INVALID_JSON,
-                f"{label} response missing choices[0].message.content",
-            ) from exc
-        return extract_json_payload(content)
-
-    async def _test_openai_compatible(
-        self,
-        *,
-        label: str,
-        model_name: str,
+        max_tokens: int,
+        json_mode: bool = False,
         api_key_override: str | None = None,
         base_url_override: str | None = None,
     ) -> str:
@@ -174,19 +153,100 @@ class BaseLLMClient(ABC):
         }
         payload: dict[str, Any] = {
             "model": model_name,
-            "messages": [{"role": "user", "content": "Reply OK"}],
-            "temperature": 0,
-            "max_tokens": 8,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
         }
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
         data = await self._post_json(url=url, headers=headers, payload=payload)
         try:
             content = data["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
             raise LLMUpstreamError(
                 FallbackReason.INVALID_JSON,
-                f"{label} test response missing choices[0].message.content",
+                f"{label} response missing choices[0].message.content",
             ) from exc
-        return str(content).strip() or "OK"
+        return str(content)
+
+    async def _generate_openai_compatible_decision(
+        self,
+        *,
+        label: str,
+        model_name: str,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float,
+        api_key_override: str | None = None,
+        base_url_override: str | None = None,
+    ) -> dict[str, Any]:
+        content = await self._post_openai_chat(
+            label=label,
+            model_name=model_name,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=temperature,
+            max_tokens=300,
+            json_mode=True,
+            api_key_override=api_key_override,
+            base_url_override=base_url_override,
+        )
+        return extract_json_payload(content)
+
+    async def _generate_openai_compatible_text(
+        self,
+        *,
+        label: str,
+        model_name: str,
+        system_prompt: str,
+        user_prompt: str,
+        history_messages: list[dict[str, str]] | None = None,
+        temperature: float,
+        max_tokens: int,
+        api_key_override: str | None = None,
+        base_url_override: str | None = None,
+    ) -> str:
+        messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
+        if history_messages:
+            for item in history_messages:
+                role = item.get("role")
+                content = item.get("content")
+                if role in {"user", "assistant"} and content:
+                    messages.append({"role": role, "content": content})
+        messages.append({"role": "user", "content": user_prompt})
+        content = await self._post_openai_chat(
+            label=label,
+            model_name=model_name,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            json_mode=False,
+            api_key_override=api_key_override,
+            base_url_override=base_url_override,
+        )
+        return content.strip()
+
+    async def _test_openai_compatible(
+        self,
+        *,
+        label: str,
+        model_name: str,
+        api_key_override: str | None = None,
+        base_url_override: str | None = None,
+    ) -> str:
+        content = await self._post_openai_chat(
+            label=f"{label} test",
+            model_name=model_name,
+            messages=[{"role": "user", "content": "Reply OK"}],
+            temperature=0,
+            max_tokens=8,
+            json_mode=False,
+            api_key_override=api_key_override,
+            base_url_override=base_url_override,
+        )
+        return content.strip() or "OK"
 
     async def _post_json(
         self,

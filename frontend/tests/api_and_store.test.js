@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import { cpToWinRate, calcWinRateDelta } from '../engine/common/evaluator.js'
+import { analyzeLineTactics } from '../engine/common/tacticsAnalyzer.js'
 import { requestAiMove, testApiConnection } from '../api/ai.js'
 import { useGameStore } from '../stores/game.js'
 import { useSettingsStore } from '../stores/settings.js'
@@ -371,5 +372,213 @@ test('settingsStore manages BYOK headers, custom personas, and injects them into
     globalThis.fetch = origFetch
     settingsStore.resetAllForTest()
     personaStore.syncPersonas()
+  }
+})
+
+test('moveHistory records full game, detects >15% blunder steps, scrubs replay timeline without mutating live game, and asks AI coach', async () => {
+  const gameStore = useGameStore()
+  const settingsStore = useSettingsStore()
+  const origFetch = globalThis.fetch
+
+  try {
+    settingsStore.resetAllForTest()
+    gameStore.startNewGame({ gameType: 'chess', difficulty: 'balanced', greeting: '开局！' })
+
+    // 模拟 4 步以上完整对局，其中玩家故意白送皇后 (Qd1->h5 然后 Qh5? 或白送车) 制造胜率骤降 >15%
+    globalThis.fetch = async (url, init) => {
+      const body = init && init.body ? JSON.parse(init.body) : {}
+      if (url.endsWith('/ai/coach/ask')) {
+        return new Response(
+          JSON.stringify({
+            answer: `复盘教练诊断：${body.last_move_notation || '开局'} 后，引擎推荐 ${body.top_candidates[0]?.uci || '最佳变例'}。`,
+            persona_id: body.persona_id || 'deepseek_master',
+            model_provider: 'deepseek',
+            model_name: 'deepseek-chat',
+            is_fallback: false,
+            fallback_reason: null,
+            latency_ms: 48,
+            request_id: 'req_coach'
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        )
+      }
+      // AI 从当前合法候选里挑第 1 步
+      const pick = body.candidates[0].uci
+      return new Response(
+        JSON.stringify({
+          selected_move: pick,
+          comment: `我就走 ${pick}`,
+          emotion: 'smug',
+          persona_id: body.persona_id,
+          model_provider: 'deepseek',
+          model_name: 'deepseek-chat',
+          is_fallback: false,
+          fallback_reason: null,
+          latency_ms: 35,
+          request_id: 'req_ai'
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    }
+
+    assert.equal(gameStore.makePlayerMove('e2e4').applied, true) // step 1
+    await gameStore.triggerAiTurn('deepseek_master') // step 2
+    assert.equal(gameStore.makePlayerMove('d1h5').applied, true) // step 3
+    await gameStore.triggerAiTurn('deepseek_master') // step 4
+    // 第 5 步白后送吃进对方兵口或底线，随后 AI 搜索识别出白送大子并触发战犯步标记
+    const legalNow = gameStore.legalMoves.value.map((m) => m.uci)
+    const blunderCandidate =
+      ['h5f7', 'h5g6', 'h5h6', 'h5h7', 'h5e5'].find((u) => legalNow.includes(u)) ||
+      legalNow[0]
+    assert.equal(gameStore.makePlayerMove(blunderCandidate).applied, true) // step 5
+    await gameStore.triggerAiTurn('deepseek_master') // step 6 (refines step 5 tactical blunder)
+
+    // 验证全量 moveHistory 不受 3 步滑窗裁剪限制
+    assert.equal(gameStore.state.moveHistory.length, 6)
+    assert.equal(gameStore.recentHistory.value.length, 3)
+    assert.deepEqual(
+      gameStore.state.moveHistory.map((m) => m.step),
+      [1, 2, 3, 4, 5, 6]
+    )
+
+    // 验证全盘至少有一处我方关键战犯步（win_rate_delta < -15% 且 is_blunder === true）
+    const blunderMove = gameStore.blunderSteps.value[0]
+    assert.ok(blunderMove, 'expected at least one detected player blunder step')
+    assert.ok(blunderMove.win_rate_delta < -15, `expected blunder delta < -15, got ${blunderMove.win_rate_delta}`)
+    assert.equal(blunderMove.is_blunder, true)
+
+    const liveFenBeforeReplay = gameStore.state.fen
+
+    // 进入复盘并拖动时间轴到第 1 步和战犯步，验证展示层还原历史局面且不破坏 live FEN
+    assert.equal(gameStore.enterReplayMode(), true)
+    assert.equal(gameStore.isReplayMode.value, true)
+    assert.equal(gameStore.state.replay.stepIndex, 6)
+
+    gameStore.seekReplayStep(1)
+    assert.equal(gameStore.displayFen.value, gameStore.state.moveHistory[0].fen)
+    assert.equal(gameStore.displayLastMove.value.uci, 'e2e4')
+    assert.equal(gameStore.state.fen, liveFenBeforeReplay)
+
+    // 停留在战犯步呼叫 AI 教练追问
+    gameStore.seekReplayStep(blunderMove.step)
+    const coachPayload = gameStore.buildCoachAskPayload({ question: '这步哪里有问题？' })
+    assert.equal(coachPayload.fen, blunderMove.fen)
+    assert.ok(Array.isArray(coachPayload.top_candidates) && coachPayload.top_candidates.length > 0)
+    assert.ok(
+      Array.isArray(coachPayload.alternative_candidates) && coachPayload.alternative_candidates.length > 0
+    )
+
+    const coachReply = await gameStore.askReplayCoach({ question: '这步哪里有问题？' })
+    assert.equal(coachReply.is_fallback, false)
+    assert.ok(coachReply.answer.includes('复盘教练诊断'))
+
+    // 退出复盘恢复实况控制
+    gameStore.exitReplayMode()
+    assert.equal(gameStore.isReplayMode.value, false)
+    assert.equal(gameStore.displayFen.value, liveFenBeforeReplay)
+  } finally {
+    globalThis.fetch = origFetch
+    settingsStore.resetAllForTest()
+  }
+})
+
+test('tacticsAnalyzer derives trade, sacrifice-for-initiative, and blunder tags, and store passes PV + chat_history to /ai/coach/ask', async () => {
+  // 1. 一换一兑子（国际象棋：白马吃黑象，黑兵反吃白马）
+  const tradeFen = '4k3/3p4/4b3/8/5N2/8/8/4K3 w - - 0 1'
+  const tradeRes = analyzeLineTactics('chess', tradeFen, ['f4e6', 'd7e6'])
+  assert.ok(tradeRes.tactics_tags.includes('一换一兑子'), `expected 一换一兑子, got ${tradeRes.tactics_tags}`)
+  assert.equal(tradeRes.pv.length, 2)
+
+  // 2. 白丢大子 / 漏防丢子（白后直接送到黑兵口中）
+  const realHungFen = '4k3/8/8/4p3/8/8/3Q4/4K3 w - - 0 1'
+  const hungRes = analyzeLineTactics('chess', realHungFen, ['d2d4', 'e5d4'], {
+    evalLossCp: 800,
+    winRateDelta: -35
+  })
+  assert.equal(hungRes.net_material_cp, -900)
+  assert.ok(hungRes.tactics_tags.includes('白丢大子'))
+  assert.ok(hungRes.tactics_tags.includes('漏防丢子'))
+
+  // 3. 弃兵抢先手 + 将军逼迫
+  const sacFen = '4k3/3p4/8/2P5/8/8/8/4K3 w - - 0 1'
+  const sacRes = analyzeLineTactics('chess', sacFen, ['c5c6', 'd7c6'], {
+    evalLossCp: 20,
+    winRateDelta: 1.5
+  })
+  assert.equal(sacRes.net_material_cp, -100)
+  assert.ok(sacRes.tactics_tags.includes('弃兵抢先手'))
+
+  // 4. Store buildCoachAskPayload & askReplayCoach 携带 pv / tactics_tags / actual_move_analysis / chat_history
+  const gameStore = useGameStore()
+  const settingsStore = useSettingsStore()
+  const origFetch = globalThis.fetch
+  const coachRequests = []
+
+  try {
+    settingsStore.resetAllForTest()
+    gameStore.startNewGame({ gameType: 'chess', difficulty: 'balanced', greeting: '开局' })
+
+    globalThis.fetch = async (url, init) => {
+      const body = JSON.parse(init.body)
+      if (url.endsWith('/ai/coach/ask')) {
+        coachRequests.push(body)
+        return new Response(
+          JSON.stringify({
+            answer: '已结合主变线与历史对话给出多轮追问分析。',
+            persona_id: 'deepseek_master',
+            model_provider: 'deepseek',
+            model_name: 'deepseek-chat',
+            is_fallback: false,
+            fallback_reason: null,
+            question_type: 'what_if_followup',
+            tactical_summary: '对比摘要',
+            latency_ms: 42,
+            request_id: 'req_v21_coach'
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        )
+      }
+      // 验证 /ai/move 保持轻量契约（不透传多余字段）
+      assert.equal(body.candidates[0].pv, undefined)
+      return new Response(
+        JSON.stringify({
+          selected_move: body.candidates[0].uci,
+          comment: '好棋',
+          emotion: 'neutral',
+          persona_id: 'deepseek_master',
+          model_provider: 'deepseek',
+          model_name: 'deepseek-chat',
+          is_fallback: false,
+          fallback_reason: null,
+          latency_ms: 20,
+          request_id: 'req_v21_ai'
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    }
+
+    gameStore.makePlayerMove('e2e4')
+    await gameStore.triggerAiTurn('deepseek_master')
+    gameStore.enterReplayMode(2)
+
+    const reply = await gameStore.askReplayCoach({
+      question: '那如果他不跟我换子怎么办？',
+      chatHistory: [
+        { role: 'user', content: '这步走得怎么样？' },
+        { role: 'assistant', content: '稳健争夺中心先手。' }
+      ]
+    })
+
+    assert.equal(reply.question_type, 'what_if_followup')
+    assert.equal(coachRequests.length, 1)
+    const sent = coachRequests[0]
+    assert.ok(sent.actual_move_analysis)
+    assert.ok(Array.isArray(sent.actual_move_analysis.tactics_tags) && sent.actual_move_analysis.tactics_tags.length > 0)
+    assert.ok(Array.isArray(sent.top_candidates[0].pv) && sent.top_candidates[0].pv.length > 0)
+    assert.ok(Array.isArray(sent.top_candidates[0].tactics_tags) && sent.top_candidates[0].tactics_tags.length > 0)
+    assert.equal(sent.chat_history.length, 2)
+  } finally {
+    globalThis.fetch = origFetch
+    settingsStore.resetAllForTest()
   }
 })

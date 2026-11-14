@@ -6,6 +6,7 @@
 
 import { MATE_SCORE, createCandidateMove } from '../common/types.js'
 import { selectCandidatesByDifficulty } from '../common/candidatePicker.js'
+import { extractPvSequence, formatChessPvStep } from '../common/pvHelper.js'
 import {
   CHESS_SIZE,
   cloneChessState,
@@ -337,6 +338,22 @@ export function searchChessTopCandidates(state, options = {}) {
   })
   const candidates = []
 
+  const pickChessFallbackMove = (curState, oppMoves) => {
+    let bestM = oppMoves[0]
+    let bestS = -Infinity
+    for (let j = 0; j < oppMoves.length; j++) {
+      const m = oppMoves[j]
+      const u = makeChessMoveInPlace(curState, m)
+      const s = -evaluateChessState(curState, curState.turn)
+      unmakeChessMoveInPlace(curState, u)
+      if (s > bestS) {
+        bestS = s
+        bestM = m
+      }
+    }
+    return bestM
+  }
+
   for (let i = 0; i < selectedMoves.length; i++) {
     const move = selectedMoves[i]
     const undo = makeChessMoveInPlace(workState, move)
@@ -346,6 +363,24 @@ export function searchChessTopCandidates(state, options = {}) {
     unmakeChessMoveInPlace(workState, undo)
 
     const notation = moveToChessNotation(state, move, legalMoves, suffix)
+    const pvInfo =
+      i < 3
+        ? extractPvSequence({
+            workState,
+            rootMove: move,
+            rootLegalMoves: legalMoves,
+            maxPlies: 3,
+            tt,
+            buildKey: buildChessKey,
+            makeMove: makeChessMoveInPlace,
+            unmakeMove: unmakeChessMoveInPlace,
+            getLegalMoves: generateChessLegalMoves,
+            isInCheck: isChessInCheck,
+            pickFallbackMove: pickChessFallbackMove,
+            formatStep: (st, m, stepNum, _curLegal, chk, oppNoMoves) =>
+              formatChessPvStep(st, m, stepNum, chk, oppNoMoves)
+          })
+        : { pv: [], pvUci: [] }
 
     candidates.push(
       createCandidateMove({
@@ -355,7 +390,9 @@ export function searchChessTopCandidates(state, options = {}) {
           : evaluateChessState(state, rootSide),
         notation,
         is_capture: Boolean(move.captured) || Boolean(move.isEnPassant),
-        is_check: isCheck
+        is_check: isCheck,
+        pv: pvInfo.pv,
+        pv_uci: pvInfo.pvUci
       })
     )
   }

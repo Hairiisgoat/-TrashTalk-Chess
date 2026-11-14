@@ -133,3 +133,22 @@ test('Xiangqi casual mode searches depth 2 and appends gentle suboptimal moves a
   const gap = topScore - tailScore
   assert.ok(gap > 0 && gap <= 160, `Expected gentle gap (0, 160] cp, got ${gap}`)
 })
+
+test('Xiangqi Top-3 candidates include readable 2-3 ply Chinese PV sequences and pv_uci', () => {
+  const state = parseXiangqiFen(INITIAL_XIANGQI_FEN)
+  const result = searchXiangqiTopCandidates(state, {
+    maxDepth: 2,
+    topK: 3,
+    timeBudgetMs: 420,
+    difficulty: 'tryhard'
+  })
+
+  assert.equal(result.candidates.length, 3)
+  for (const cand of result.candidates) {
+    assert.ok(Array.isArray(cand.pv) && cand.pv.length >= 2 && cand.pv.length <= 3)
+    assert.ok(Array.isArray(cand.pv_uci) && cand.pv_uci.length === cand.pv.length)
+    assert.equal(cand.pv_uci[0], cand.uci)
+    assert.ok(cand.pv[0].startsWith('1. '))
+    assert.ok(cand.pv[1].startsWith('2. '))
+  }
+})

@@ -26,6 +26,8 @@ from app.personas.prompts import (
 from app.personas.registry import PersonaConfig, get_persona
 from app.schemas.common import FallbackReason, GameType, ModelProvider
 from app.schemas.move import (
+    CandidateMove,
+    CustomPersonaConfig,
     LLMDecisionOutput,
     MoveRequest,
     MoveResponse,
@@ -97,21 +99,85 @@ def validate_fen_for_game(game_type: GameType, fen: str) -> None:
         raise InvalidFenError("Xiangqi FEN active side must be 'w' or 'b'")
 
 
-def validate_ucis_for_game(req: MoveRequest) -> None:
-    """Validate that candidate and history UCIs conform to the active game's notation."""
-    pattern = _CHESS_UCI_RE if req.game_type == GameType.CHESS else _XIANGQI_UCI_RE
-    for idx, cand in enumerate(req.candidates):
+def validate_candidate_list_ucis(
+    game_type: GameType,
+    candidates: list[CandidateMove],
+    field_name: str = "candidates",
+) -> None:
+    """Validate that a list of candidate moves conforms to the game's UCI syntax."""
+    pattern = _CHESS_UCI_RE if game_type == GameType.CHESS else _XIANGQI_UCI_RE
+    for idx, cand in enumerate(candidates):
         if not pattern.match(cand.uci):
             raise InvalidCandidatesError(
-                f"candidates[{idx}].uci '{cand.uci}' is invalid for {req.game_type.value}",
-                field="candidates",
+                f"{field_name}[{idx}].uci '{cand.uci}' is invalid for {game_type.value}",
+                field=field_name,
             )
+
+
+def validate_ucis_for_game(req: MoveRequest) -> None:
+    """Validate that candidate and history UCIs conform to the active game's notation."""
+    validate_candidate_list_ucis(req.game_type, req.candidates, "candidates")
+    pattern = _CHESS_UCI_RE if req.game_type == GameType.CHESS else _XIANGQI_UCI_RE
     for idx, item in enumerate(req.recent_history):
         if not pattern.match(item.uci):
             raise InvalidCandidatesError(
                 f"recent_history[{idx}].uci '{item.uci}' is invalid for {req.game_type.value}",
                 field="recent_history",
             )
+
+
+def resolve_persona_for_request(
+    persona_id: str,
+    game_type: GameType,
+    custom_persona: CustomPersonaConfig | None,
+) -> PersonaConfig:
+    """Resolve preset or synthetic custom persona and verify game compatibility."""
+    persona = get_persona(persona_id)
+    if persona is None:
+        if custom_persona is None:
+            raise PersonaNotFoundError(persona_id)
+        persona = PersonaConfig(
+            persona_id=persona_id,
+            name=custom_persona.name,
+            title="玩家自定义对手",
+            model_provider=ModelProvider.DEEPSEEK,
+            default_model_name="",
+            theme_color="#8B5CF6",
+            avatar_url="",
+            tags=("自定义",),
+            supported_games=(GameType.CHESS, GameType.XIANGQI),
+            greeting=custom_persona.catchphrase or "请赐教！",
+            temperature=0.75,
+        )
+
+    if game_type not in persona.supported_games:
+        raise UnsupportedGameForPersonaError(persona_id, game_type.value)
+    return persona
+
+
+def resolve_llm_target(
+    settings: Settings,
+    *,
+    default_provider: ModelProvider,
+    default_model: str,
+    custom_config: CustomLLMConfig | None,
+) -> tuple[ModelProvider, str, str | None, str | None, bool]:
+    """Resolve effective provider, model name, and stateless BYOK credentials."""
+    provider = default_provider
+    if custom_config and custom_config.provider:
+        provider = ModelProvider(custom_config.provider)
+
+    if custom_config and custom_config.model:
+        model_name = custom_config.model
+    elif provider != default_provider or not default_model:
+        model_name = settings.get_provider_default_model(provider.value)
+    else:
+        model_name = default_model
+
+    api_key_override = custom_config.api_key if custom_config else None
+    base_url_override = custom_config.base_url if custom_config else None
+    has_custom_key = is_api_key_configured(api_key_override)
+    return provider, model_name, api_key_override, base_url_override, has_custom_key
 
 
 def _classify_validation_error(exc: ValidationError) -> FallbackReason:
@@ -131,27 +197,9 @@ class DecisionService:
         self.settings = settings
 
     def _validate_request(self, req: MoveRequest) -> PersonaConfig:
-        persona = get_persona(req.persona_id)
-        if persona is None:
-            if req.custom_persona is None:
-                raise PersonaNotFoundError(req.persona_id)
-            persona = PersonaConfig(
-                persona_id=req.persona_id,
-                name=req.custom_persona.name,
-                title="玩家自定义对手",
-                model_provider=ModelProvider.DEEPSEEK,
-                default_model_name="",
-                theme_color="#8B5CF6",
-                avatar_url="",
-                tags=("自定义",),
-                supported_games=(GameType.CHESS, GameType.XIANGQI),
-                greeting=req.custom_persona.catchphrase or "请赐教！",
-                temperature=0.75,
-            )
-
-        if req.game_type not in persona.supported_games:
-            raise UnsupportedGameForPersonaError(req.persona_id, req.game_type.value)
-
+        persona = resolve_persona_for_request(
+            req.persona_id, req.game_type, req.custom_persona
+        )
         validate_fen_for_game(req.game_type, req.fen)
         validate_ucis_for_game(req)
         return persona
@@ -164,21 +212,12 @@ class DecisionService:
         custom_config: CustomLLMConfig | None,
     ) -> tuple[ModelProvider, str, str | None, str | None, bool]:
         """Resolve effective provider, model name, and stateless BYOK credentials."""
-        provider = default_provider
-        if custom_config and custom_config.provider:
-            provider = ModelProvider(custom_config.provider)
-
-        if custom_config and custom_config.model:
-            model_name = custom_config.model
-        elif provider != default_provider or not default_model:
-            model_name = self.settings.get_provider_default_model(provider.value)
-        else:
-            model_name = default_model
-
-        api_key_override = custom_config.api_key if custom_config else None
-        base_url_override = custom_config.base_url if custom_config else None
-        has_custom_key = is_api_key_configured(api_key_override)
-        return provider, model_name, api_key_override, base_url_override, has_custom_key
+        return resolve_llm_target(
+            self.settings,
+            default_provider=default_provider,
+            default_model=default_model,
+            custom_config=custom_config,
+        )
 
     async def test_connection(
         self,

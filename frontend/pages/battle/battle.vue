@@ -33,6 +33,15 @@
         </view>
       </view>
       <view class="top-right">
+        <view
+          v-if="gameState.moveHistory.length > 0 && !gameState.isAiThinking"
+          class="replay-toggle-btn"
+          :class="{ 'is-active': isReplayMode }"
+          :style="isReplayMode ? { borderColor: themeColor, backgroundColor: hexWithAlpha(themeColor, 0.24) } : {}"
+          @tap="onToggleReplay"
+        >
+          <text class="replay-toggle-text">{{ isReplayMode ? '退出复盘' : '🎞️ 复盘' }}</text>
+        </view>
         <view class="turn-badge" :class="turnBadgeClass">
           <text class="turn-text">{{ turnStatusText }}</text>
         </view>
@@ -51,7 +60,7 @@
     <view class="bubble-section">
       <TrashTalkBubble
         :persona="currentPersona"
-        :bubble="gameState.bubble"
+        :bubble="displayBubble"
         :is-thinking="gameState.isAiThinking"
       />
     </view>
@@ -59,8 +68,8 @@
     <!-- 局势评估胜率条 -->
     <view class="eval-section">
       <EvalBar
-        :win-rate-for-ai="gameState.winRateForAi"
-        :win-rate-delta="gameState.winRateDelta"
+        :win-rate-for-ai="displayWinRateForAi"
+        :win-rate-delta="displayWinRateDelta"
         :game-type="gameState.gameType"
         :theme-color="themeColor"
       />
@@ -70,48 +79,63 @@
     <view class="board-section">
       <XiangqiBoard
         v-if="gameState.gameType === 'xiangqi'"
-        :board="gameState.boardState.board"
+        :board="displayBoardState.board"
         :legal-moves="legalMoves"
-        :last-move="gameState.lastMove"
-        :disabled="!isPlayerTurn"
-        :in-check-side="inCheckSide"
+        :last-move="displayLastMove"
+        :disabled="!isPlayerTurn || isReplayMode"
+        :in-check-side="displayInCheckSide"
         :theme-color="themeColor"
         @move="onPlayerMove"
       />
       <ChessBoard
         v-else
-        :board="gameState.boardState.board"
+        :board="displayBoardState.board"
         :legal-moves="legalMoves"
-        :last-move="gameState.lastMove"
-        :disabled="!isPlayerTurn"
-        :in-check-side="inCheckSide"
+        :last-move="displayLastMove"
+        :disabled="!isPlayerTurn || isReplayMode"
+        :in-check-side="displayInCheckSide"
         :theme-color="themeColor"
         @move="onPlayerMove"
       />
     </view>
 
-    <!-- 最近着法流水 -->
+    <!-- 全量棋谱记录 / 战犯步定位条 -->
     <view class="history-strip">
-      <text class="history-label">近步记录：</text>
+      <text class="history-label">{{ isReplayMode ? '全量棋谱：' : '近步记录：' }}</text>
       <scroll-view class="history-scroll" scroll-x>
         <view class="history-items">
-          <text v-if="gameState.moveLog.length === 0" class="history-empty">尚未落子，红/白方先行</text>
+          <text v-if="gameState.moveHistory.length === 0" class="history-empty">尚未落子，红/白方先行</text>
           <view
-            v-for="(item, idx) in recentDisplayMoves"
-            :key="`${idx}-${item.uci}`"
+            v-for="item in displayHistoryItems"
+            :key="`${item.step}-${item.uci}`"
             class="history-tag"
-            :class="item.side === 'player' ? 'is-player' : 'is-ai'"
+            :class="[
+              item.side === 'player' ? 'is-player' : 'is-ai',
+              {
+                'is-blunder': item.is_blunder,
+                'is-active-step': isReplayMode && gameState.replay.stepIndex === item.step
+              }
+            ]"
+            :style="
+              isReplayMode && gameState.replay.stepIndex === item.step
+                ? { borderColor: themeColor }
+                : {}
+            "
+            @tap="onSelectHistoryStep(item.step)"
           >
             <text class="history-tag-text">
-              {{ item.side === 'player' ? '我' : 'AI' }}·{{ item.notation || item.uci }}
+              {{ item.step }}.{{ item.side === 'player' ? '我' : 'AI' }}·{{ item.notation || item.uci }}
             </text>
+            <view v-if="item.is_blunder" class="blunder-badge">
+              <text class="blunder-badge-text">?! 失误</text>
+            </view>
           </view>
         </view>
       </scroll-view>
     </view>
 
-    <!-- 底部控制栏 -->
-    <view class="action-bar">
+    <!-- 底部控制栏：正常对局操作 vs 复盘时间轴控制条 -->
+    <view v-if="!isReplayMode" class="action-bar">
       <button class="ctrl-btn undo-btn" :disabled="!canUndo" @tap="onUndo">
         悔棋 ({{ gameState.undoRemaining }}/{{ gameState.maxUndoCount }})
       </button>
@@ -126,8 +150,74 @@
       </button>
     </view>
 
+    <view v-else class="replay-dock">
+      <view class="replay-slider-row">
+        <text class="replay-step-text">
+          第 {{ gameState.replay.stepIndex }} / {{ gameState.moveHistory.length }} 步
+        </text>
+        <view v-if="currentReplayEntry && currentReplayEntry.is_blunder" class="blunder-badge large">
+          <text class="blunder-badge-text">?! 失误 ({{ currentReplayEntry.win_rate_delta }}%)</text>
+        </view>
+        <view v-else-if="blunderSteps.length > 0" class="blunder-jump-pill" @tap="onJumpNextBlunder">
+          <text class="blunder-jump-text">定位战犯步 ({{ blunderSteps.length }})</text>
+        </view>
+      </view>
+      <slider
+        class="replay-slider"
+        :min="0"
+        :max="Math.max(1, gameState.moveHistory.length)"
+        :value="gameState.replay.stepIndex"
+        :disabled="gameState.moveHistory.length === 0"
+        :activeColor="themeColor"
+        backgroundColor="rgba(148, 163, 184, 0.25)"
+        block-size="16"
+        @change="onSliderChange"
+      />
+      <view class="replay-btn-row">
+        <button
+          class="ctrl-btn replay-btn"
+          :disabled="gameState.replay.stepIndex <= 1 || gameState.moveHistory.length === 0"
+          @tap="onSeekFirst"
+        >
+          第一步
+        </button>
+        <button
+          class="ctrl-btn replay-btn"
+          :disabled="gameState.replay.stepIndex <= 0"
+          @tap="onSeekPrev"
+        >
+          上一步
+        </button>
+        <button
+          class="ctrl-btn replay-btn"
+          :disabled="gameState.replay.stepIndex >= gameState.moveHistory.length"
+          @tap="onSeekNext"
+        >
+          下一步
+        </button>
+        <button
+          class="ctrl-btn replay-btn"
+          :disabled="gameState.replay.stepIndex >= gameState.moveHistory.length"
+          @tap="onSeekLatest"
+        >
+          最新一步
+        </button>
+        <button class="ctrl-btn ghost replay-btn" @tap="onToggleReplay">
+          返回
+        </button>
+      </view>
+    </view>
+
+    <!-- AI 教练复盘问答面板 -->
+    <view v-if="isReplayMode" class="coach-section">
+      <CoachAskPanel
+        :persona="currentPersona"
+        :current-entry="currentReplayEntry"
+      />
+    </view>
+
     <!-- 对局结束弹窗 -->
-    <view v-if="gameState.gameStatus.isOver" class="gameover-mask">
+    <view v-if="gameState.gameStatus.isOver && !isReplayMode" class="gameover-mask">
       <view class="gameover-card" :style="{ borderColor: themeColor }">
         <text class="gameover-emoji">{{ gameoverEmoji }}</text>
         <text class="gameover-title">{{ gameoverTitle }}</text>
@@ -135,15 +225,25 @@
         <view class="gameover-quote">
           <text class="quote-text">“{{ gameState.bubble.comment }}”</text>
         </view>
-        <view class="gameover-actions">
-          <button class="modal-btn secondary" @tap="onBackHome">返回大厅</button>
+        <view class="gameover-actions vertical">
           <button
-            class="modal-btn primary"
-            :style="{ backgroundColor: themeColor }"
-            @tap="onRestart"
+            v-if="gameState.moveHistory.length > 0"
+            class="modal-btn coach-entry"
+            :style="{ borderColor: themeColor, color: themeColor }"
+            @tap="onEnterReplay"
           >
-            再来一局
+            🎓 进入赛后复盘 ({{ blunderSteps.length > 0 ? `含${blunderSteps.length}处失误` : 'AI教练精讲' }})
           </button>
+          <view class="gameover-actions">
+            <button class="modal-btn secondary" @tap="onBackHome">返回大厅</button>
+            <button
+              class="modal-btn primary"
+              :style="{ backgroundColor: themeColor }"
+              @tap="onRestart"
+            >
+              再来一局
+            </button>
+          </view>
         </view>
       </view>
     </view>
@@ -162,6 +262,7 @@ import TrashTalkBubble from '../../components/TrashTalkBubble.vue'
 import EvalBar from '../../components/EvalBar.vue'
 import XiangqiBoard from '../../components/XiangqiBoard.vue'
 import ChessBoard from '../../components/ChessBoard.vue'
+import CoachAskPanel from '../../components/CoachAskPanel.vue'
 
 const personaStore = usePersonaStore()
 const gameStore = useGameStore()
@@ -170,6 +271,14 @@ const gameState = gameStore.state
 const legalMoves = gameStore.legalMoves
 const isPlayerTurn = gameStore.isPlayerTurn
 const canUndo = gameStore.canUndo
+const isReplayMode = gameStore.isReplayMode
+const currentReplayEntry = gameStore.currentReplayEntry
+const blunderSteps = gameStore.blunderSteps
+const displayBoardState = gameStore.displayBoardState
+const displayLastMove = gameStore.displayLastMove
+const displayWinRateForAi = gameStore.displayWinRateForAi
+const displayWinRateDelta = gameStore.displayWinRateDelta
+const displayBubble = gameStore.displayBubble
 const currentPersona = personaStore.currentPersona
 const themeColor = personaStore.themeColor
 const isMuted = ref(soundManager.isMuted())
@@ -191,14 +300,18 @@ const diffLabel = computed(() => {
   return found ? found.shortLabel : gameState.difficulty
 })
 
-const moveRound = computed(() => Math.max(1, gameState.boardState.fullmove || 1))
+const moveRound = computed(() => Math.max(1, displayBoardState.value.fullmove || 1))
 
-const inCheckSide = computed(() => {
+const displayInCheckSide = computed(() => {
+  if (isReplayMode.value) return null
   if (!gameState.gameStatus.inCheck) return null
   return gameState.boardState.turn
 })
 
 const turnStatusText = computed(() => {
+  if (isReplayMode.value) {
+    return `复盘 ${gameState.replay.stepIndex}/${gameState.moveHistory.length}`
+  }
   if (gameState.gameStatus.isOver) return '对局已结束'
   if (gameState.isAiThinking) return 'AI 算步中…'
   if (gameState.gameStatus.inCheck) return '⚠️ 你被将军!'
@@ -206,13 +319,17 @@ const turnStatusText = computed(() => {
 })
 
 const turnBadgeClass = computed(() => {
+  if (isReplayMode.value) return 'is-thinking'
   if (gameState.gameStatus.isOver) return 'is-over'
   if (gameState.isAiThinking) return 'is-thinking'
   if (gameState.gameStatus.inCheck) return 'is-check'
   return 'is-player'
 })
 
-const recentDisplayMoves = computed(() => gameState.moveLog.slice(-6))
+const displayHistoryItems = computed(() => {
+  if (isReplayMode.value) return gameState.moveHistory
+  return gameState.moveHistory.slice(-8)
+})
 
 const gameoverEmoji = computed(() => {
   const w = gameState.gameStatus.winner
@@ -287,6 +404,55 @@ function onBackHome() {
     uni.reLaunch({ url: '/pages/index/index' })
   }
 }
+
+function onToggleReplay() {
+  if (isReplayMode.value) {
+    gameStore.exitReplayMode()
+  } else {
+    gameStore.enterReplayMode()
+  }
+}
+
+function onEnterReplay() {
+  const firstBlunder = blunderSteps.value[0]
+  gameStore.enterReplayMode(firstBlunder ? firstBlunder.step : gameState.moveHistory.length)
+}
+
+function onSelectHistoryStep(step) {
+  if (!isReplayMode.value) {
+    gameStore.enterReplayMode(step)
+  } else {
+    gameStore.seekReplayStep(step)
+  }
+}
+
+function onSliderChange(e) {
+  const val = e && e.detail ? e.detail.value : 0
+  gameStore.seekReplayStep(val)
+}
+
+function onSeekFirst() {
+  gameStore.seekReplayStep(gameState.moveHistory.length > 0 ? 1 : 0)
+}
+
+function onSeekPrev() {
+  gameStore.seekReplayStep(gameState.replay.stepIndex - 1)
+}
+
+function onSeekNext() {
+  gameStore.seekReplayStep(gameState.replay.stepIndex + 1)
+}
+
+function onSeekLatest() {
+  gameStore.seekReplayStep(gameState.moveHistory.length)
+}
+
+function onJumpNextBlunder() {
+  const blunders = blunderSteps.value
+  if (!blunders.length) return
+  const next = blunders.find((b) => b.step > gameState.replay.stepIndex) || blunders[0]
+  gameStore.seekReplayStep(next.step)
+}
 </script>
 
 <style scoped>
@@ -340,7 +506,9 @@ function onBackHome() {
 .eval-section,
 .board-section,
 .history-strip,
-.action-bar {
+.action-bar,
+.replay-dock,
+.coach-section {
   position: relative;
   z-index: 1;
 }
@@ -349,7 +517,9 @@ function onBackHome() {
 .bubble-section,
 .eval-section,
 .history-strip,
-.action-bar {
+.action-bar,
+.replay-dock,
+.coach-section {
   width: 100%;
   max-width: var(--stage-w);
   box-sizing: border-box;
@@ -660,6 +830,11 @@ function onBackHome() {
   margin-top: 4px;
 }
 
+.gameover-actions.vertical {
+  flex-direction: column;
+  gap: 8px;
+}
+
 .modal-btn {
   flex: 1;
   height: 44px;
@@ -680,5 +855,123 @@ function onBackHome() {
 
 .modal-btn.primary {
   color: #FFFFFF;
+}
+
+.modal-btn.coach-entry {
+  width: 100%;
+  flex: none;
+  background-color: rgba(15, 23, 42, 0.85);
+  border-width: 1.5px;
+  border-style: solid;
+  font-size: 14px;
+}
+
+.replay-toggle-btn {
+  padding: 5px 10px;
+  border-radius: 999px;
+  background-color: rgba(30, 41, 59, 0.78);
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  cursor: pointer;
+}
+
+.replay-toggle-text {
+  font-size: 12px;
+  font-weight: 700;
+  color: #E2E8F0;
+}
+
+.history-tag {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+
+.history-tag.is-blunder {
+  background-color: rgba(239, 68, 68, 0.2);
+  border-color: rgba(248, 113, 113, 0.45);
+}
+
+.history-tag.is-active-step {
+  border-width: 1.5px;
+  box-shadow: 0 0 10px rgba(96, 165, 250, 0.3);
+}
+
+.blunder-badge {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background-color: #EF4444;
+}
+
+.blunder-badge.large {
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.blunder-badge-text {
+  font-size: 10px;
+  font-weight: 800;
+  color: #FFFFFF;
+}
+
+.replay-dock {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(30, 41, 59, 0.84), rgba(15, 23, 42, 0.92));
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.replay-slider-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.replay-step-text {
+  font-size: 12px;
+  font-weight: 700;
+  color: #E2E8F0;
+}
+
+.blunder-jump-pill {
+  padding: 3px 9px;
+  border-radius: 999px;
+  background-color: rgba(239, 68, 68, 0.18);
+  border: 1px solid rgba(248, 113, 113, 0.45);
+  cursor: pointer;
+}
+
+.blunder-jump-text {
+  font-size: 11px;
+  font-weight: 700;
+  color: #FCA5A5;
+}
+
+.replay-slider {
+  margin: 2px 4px;
+}
+
+.replay-btn-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+
+.ctrl-btn.replay-btn {
+  height: 38px;
+  line-height: 38px;
+  font-size: 12px;
+  padding: 0 4px;
 }
 </style>

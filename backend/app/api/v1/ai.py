@@ -9,11 +9,14 @@ from app.core.logging import request_id_ctx
 from app.llm.router import LLMRouter
 from app.schemas.common import ErrorCode
 from app.schemas.move import (
+    CoachAskRequest,
+    CoachAskResponse,
     MoveRequest,
     MoveResponse,
     TestConnectionRequest,
     TestConnectionResponse,
 )
+from app.services.coach_service import CoachService
 from app.services.decision_service import DecisionService
 
 router = APIRouter(tags=["ai"])
@@ -74,6 +77,15 @@ def get_decision_service(
     return DecisionService(llm_router=llm_router, settings=settings)
 
 
+def get_coach_service(
+    http_client: httpx.AsyncClient = Depends(get_http_client),
+    settings: Settings = Depends(get_settings),
+) -> CoachService:
+    """Build per-request CoachService wired with shared httpx client & settings."""
+    llm_router = LLMRouter(http_client=http_client, settings=settings)
+    return CoachService(llm_router=llm_router, settings=settings)
+
+
 @router.post("/ai/move", response_model=MoveResponse)
 async def create_ai_move(
     request: Request,
@@ -104,4 +116,20 @@ async def test_ai_connection(
         custom_config=custom_config if custom_config.has_any else None,
         fallback_provider=payload.provider if payload else None,
         fallback_model=payload.model if payload else None,
+    )
+
+
+@router.post("/ai/coach/ask", response_model=CoachAskResponse)
+async def ask_ai_coach(
+    request: Request,
+    payload: CoachAskRequest,
+    custom_config: CustomLLMConfig = Depends(extract_custom_llm_config),
+    service: CoachService = Depends(get_coach_service),
+) -> CoachAskResponse:
+    """Answer user's post-game replay question grounded in Top-K engine lines."""
+    request_id = getattr(request.state, "request_id", None) or request_id_ctx.get("-")
+    return await service.ask_coach(
+        req=payload,
+        request_id=request_id,
+        custom_config=custom_config if custom_config.has_any else None,
     )

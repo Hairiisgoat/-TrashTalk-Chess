@@ -46,7 +46,10 @@ export function createCandidateMove({
   score_cp,
   notation = '',
   is_capture = false,
-  is_check = false
+  is_check = false,
+  pv = [],
+  pv_uci = [],
+  tactics_tags = []
 }) {
   const numericScore = Number(score_cp)
   const safeScore = Number.isFinite(numericScore) ? numericScore : 0
@@ -56,7 +59,10 @@ export function createCandidateMove({
     score_cp: clampedScore,
     notation: String(notation || '').slice(0, 24),
     is_capture: Boolean(is_capture),
-    is_check: Boolean(is_check)
+    is_check: Boolean(is_check),
+    pv: Array.isArray(pv) ? pv.slice(0, 6) : [],
+    pv_uci: Array.isArray(pv_uci) ? pv_uci.slice(0, 6) : [],
+    tactics_tags: Array.isArray(tactics_tags) ? tactics_tags.slice(0, 8) : []
   }
 }
 

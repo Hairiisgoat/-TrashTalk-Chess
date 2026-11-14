@@ -140,3 +140,23 @@ test('selectCandidatesByDifficulty picks -40..-130cp moves and filters out blata
   assert.ok(!pickedUcis.includes('g1g2'))
   assert.ok(!pickedUcis.includes('h1h2'))
 })
+
+test('Chess Top-3 candidates include readable 2-3 ply PV sequences and matching pv_uci', () => {
+  const fen = 'rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2'
+  const state = parseChessFen(fen)
+  const result = searchChessTopCandidates(state, {
+    maxDepth: 2,
+    topK: 3,
+    timeBudgetMs: 400,
+    difficulty: 'tryhard'
+  })
+
+  assert.equal(result.candidates.length, 3)
+  for (const cand of result.candidates) {
+    assert.ok(Array.isArray(cand.pv) && cand.pv.length >= 2 && cand.pv.length <= 3)
+    assert.ok(Array.isArray(cand.pv_uci) && cand.pv_uci.length === cand.pv.length)
+    assert.equal(cand.pv_uci[0], cand.uci)
+    assert.ok(cand.pv[0].startsWith('1. '))
+    assert.ok(cand.pv[1].startsWith('2. '))
+  }
+})

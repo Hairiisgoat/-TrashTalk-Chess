@@ -170,6 +170,136 @@ export async function getPersonas(gameType = null) {
   }
 }
 
+function sanitizeCustomPersona(customPersona) {
+  if (!customPersona || !customPersona.name || !customPersona.style_prompt) {
+    return undefined
+  }
+  return {
+    name: String(customPersona.name).slice(0, 40),
+    style_prompt: String(customPersona.style_prompt).slice(0, 500),
+    catchphrase: customPersona.catchphrase
+      ? String(customPersona.catchphrase).slice(0, 140)
+      : undefined
+  }
+}
+
+function formatCandidateForCoach(cand) {
+  return {
+    uci: cand.uci,
+    score_cp: cand.score_cp,
+    notation: cand.notation || '',
+    is_capture: Boolean(cand.is_capture),
+    is_check: Boolean(cand.is_check),
+    pv: Array.isArray(cand.pv) ? cand.pv.slice(0, 6) : [],
+    tactics_tags: Array.isArray(cand.tactics_tags) ? cand.tactics_tags.slice(0, 8) : []
+  }
+}
+
+export function buildLocalCoachFallback(payload, elapsedMs = 0) {
+  const moveLabel = payload.last_move_notation || '当前开局'
+  const cands =
+    (Array.isArray(payload.alternative_candidates) && payload.alternative_candidates.length > 0
+      ? payload.alternative_candidates
+      : payload.top_candidates) || []
+  const bestLine = cands.length
+    ? cands
+        .slice(0, 3)
+        .map((c, idx) => {
+          const pvStr = Array.isArray(c.pv) && c.pv.length > 0 ? ` | 主变: ${c.pv.join(' -> ')}` : ''
+          const tagStr =
+            Array.isArray(c.tactics_tags) && c.tactics_tags.length > 0
+              ? ` [${c.tactics_tags.join('、')}]`
+              : ''
+          return `${idx + 1}. ${c.notation || c.uci} (${c.score_cp >= 0 ? '+' : ''}${c.score_cp})${tagStr}${pvStr}`
+        })
+        .join('\n')
+    : '当前局面已无后续合法着法。'
+  const deltaNote =
+    typeof payload.win_rate_delta === 'number' && payload.win_rate_delta < -15
+      ? `这一步后我方胜率骤降 ${payload.win_rate_delta.toFixed(1)}%，属于关键战犯步！`
+      : ''
+  const actualNote =
+    payload.actual_move_analysis && payload.actual_move_analysis.summary
+      ? `\n实走推演：${payload.actual_move_analysis.summary}`
+      : ''
+
+  return {
+    answer: `（本地引擎离线复盘）针对「${moveLabel}」，当前我方胜率 ${Number(payload.win_rate || 50).toFixed(1)}%。${deltaNote}${actualNote}\n引擎推荐变例：\n${bestLine}`,
+    persona_id: payload.persona_id || 'deepseek_master',
+    model_provider: 'fallback',
+    model_name: 'engine_coach_local',
+    is_fallback: true,
+    is_local_fallback: true,
+    fallback_reason: 'backend_unavailable',
+    latency_ms: Math.max(0, Math.round(elapsedMs)),
+    request_id: generateRequestId()
+  }
+}
+
+/**
+ * 复盘 AI 教练自由追问：POST /api/v1/ai/coach/ask
+ */
+export async function askCoach(payload) {
+  if (!payload || !payload.fen || !payload.question) {
+    throw new Error('askCoach requires fen and question')
+  }
+  const startedAt = Date.now()
+  try {
+    const body = {
+      game_type: payload.game_type,
+      fen: payload.fen,
+      last_move_notation: payload.last_move_notation || null,
+      score_cp: Math.max(-30000, Math.min(30000, Math.round(Number(payload.score_cp || 0)))),
+      win_rate: Math.max(0, Math.min(100, Number(payload.win_rate ?? 50))),
+      top_candidates: Array.isArray(payload.top_candidates)
+        ? payload.top_candidates.slice(0, 3).map(formatCandidateForCoach)
+        : [],
+      question: String(payload.question).trim().slice(0, 500),
+      persona_id: payload.persona_id || 'deepseek_master'
+    }
+    const customPersona = sanitizeCustomPersona(payload.custom_persona)
+    if (customPersona) body.custom_persona = customPersona
+    if (typeof payload.win_rate_delta === 'number') {
+      body.win_rate_delta = Math.max(-100, Math.min(100, payload.win_rate_delta))
+    }
+    if (Array.isArray(payload.alternative_candidates) && payload.alternative_candidates.length > 0) {
+      body.alternative_candidates = payload.alternative_candidates
+        .slice(0, 3)
+        .map(formatCandidateForCoach)
+    }
+    if (payload.actual_move_analysis && typeof payload.actual_move_analysis === 'object') {
+      body.actual_move_analysis = payload.actual_move_analysis
+    }
+    if (Array.isArray(payload.chat_history) && payload.chat_history.length > 0) {
+      body.chat_history = payload.chat_history
+        .slice(-8)
+        .filter((turn) => turn && (turn.role === 'user' || turn.role === 'assistant') && turn.content)
+        .map((turn) => ({
+          role: turn.role,
+          content: String(turn.content).trim().slice(0, 1200)
+        }))
+    }
+    if (payload.summary_context) {
+      body.summary_context = String(payload.summary_context).slice(0, 1000)
+    }
+
+    const res = await request({
+      url: '/ai/coach/ask',
+      method: 'POST',
+      data: body,
+      headers: getActiveCustomHeaders(),
+      timeout: Math.max(ENV_CONFIG.requestTimeoutMs, 12000)
+    })
+
+    return {
+      ...res,
+      is_local_fallback: false
+    }
+  } catch (_err) {
+    return buildLocalCoachFallback(payload, Date.now() - startedAt)
+  }
+}
+
 /**
  * 核心对弈决策请求：POST /api/v1/ai/move
  * 任何网络异常、8000ms 超时、非 200 错误或非法走法，均自动触发本地 Fallback，保证永不卡死
@@ -186,25 +316,22 @@ export async function requestAiMove(payload) {
     const body = {
       game_type: payload.game_type,
       fen: payload.fen,
-      candidates: payload.candidates.slice(0, 10),
+      candidates: payload.candidates.slice(0, 10).map((c) => ({
+        uci: c.uci,
+        score_cp: c.score_cp,
+        notation: c.notation || '',
+        is_capture: Boolean(c.is_capture),
+        is_check: Boolean(c.is_check)
+      })),
       persona_id: payload.persona_id,
       difficulty: payload.difficulty,
       recent_history: (payload.recent_history || []).slice(-3),
       win_rate_delta: Math.max(-100, Math.min(100, Number(payload.win_rate_delta || 0))),
       move_number: Math.max(1, parseInt(payload.move_number || 1, 10))
     }
-    if (
-      payload.custom_persona &&
-      payload.custom_persona.name &&
-      payload.custom_persona.style_prompt
-    ) {
-      body.custom_persona = {
-        name: String(payload.custom_persona.name).slice(0, 40),
-        style_prompt: String(payload.custom_persona.style_prompt).slice(0, 500),
-        catchphrase: payload.custom_persona.catchphrase
-          ? String(payload.custom_persona.catchphrase).slice(0, 140)
-          : undefined
-      }
+    const customPersona = sanitizeCustomPersona(payload.custom_persona)
+    if (customPersona) {
+      body.custom_persona = customPersona
     }
 
     const res = await request({

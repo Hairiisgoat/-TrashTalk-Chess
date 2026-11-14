@@ -44,6 +44,32 @@ class LLMRouter:
             base_url_override=base_url_override,
         )
 
+    async def generate_text(
+        self,
+        *,
+        provider: ModelProvider,
+        model_name: str,
+        system_prompt: str,
+        user_prompt: str,
+        history_messages: list[dict[str, str]] | None = None,
+        temperature: float = 0.6,
+        max_tokens: int = 850,
+        api_key_override: str | None = None,
+        base_url_override: str | None = None,
+    ) -> str:
+        """Dispatch free-form text generation (e.g. post-game coach Q&A)."""
+        client = self._get_client(provider)
+        return await client.generate_text(
+            model_name=model_name,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            history_messages=history_messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            api_key_override=api_key_override,
+            base_url_override=base_url_override,
+        )
+
     async def test_connection(
         self,
         *,

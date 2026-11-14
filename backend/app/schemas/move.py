@@ -26,6 +26,8 @@ class CandidateMove(BaseModel):
     notation: str | None = Field(default=None, max_length=24)
     is_capture: bool = False
     is_check: bool = False
+    pv: list[str] = Field(default_factory=list, max_length=6)
+    tactics_tags: list[str] = Field(default_factory=list, max_length=8)
 
 
 class HistoryItem(BaseModel):
@@ -118,6 +120,83 @@ class MoveResponse(BaseModel):
     model_name: str
     is_fallback: bool
     fallback_reason: FallbackReason | None
+    latency_ms: int = Field(..., ge=0)
+    request_id: str
+
+
+class ActualMoveAnalysis(BaseModel):
+    """2-step lookahead material & tactical breakdown for the player's/AI's actual move."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    uci: str | None = Field(default=None, max_length=8)
+    notation: str | None = Field(default=None, max_length=32)
+    pv: list[str] = Field(default_factory=list, max_length=6)
+    net_material_cp: int = Field(default=0, ge=-30000, le=30000)
+    captured_by_mover: list[str] = Field(default_factory=list, max_length=6)
+    captured_by_opponent: list[str] = Field(default_factory=list, max_length=6)
+    tactics_tags: list[str] = Field(default_factory=list, max_length=8)
+    eval_loss_cp: int | None = Field(default=None, ge=-30000, le=30000)
+    summary: str | None = Field(default=None, max_length=300)
+
+
+class CoachChatTurn(BaseModel):
+    """Single historical dialogue turn for multi-turn coach follow-up."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    role: Literal["user", "assistant"]
+    content: str = Field(..., min_length=1, max_length=1200)
+
+    @field_validator("content", mode="before")
+    @classmethod
+    def _clean_content(cls, value: object) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("chat_history turn content must be non-empty")
+        return " ".join(value.strip().split())
+
+
+class CoachAskRequest(BaseModel):
+    """Request payload for POST /api/v1/ai/coach/ask (post-game replay coach)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    game_type: GameType
+    fen: str = Field(..., min_length=10, max_length=128)
+    last_move_notation: str | None = Field(default=None, max_length=32)
+    score_cp: int = Field(..., ge=-30000, le=30000)
+    win_rate: float = Field(..., ge=0.0, le=100.0)
+    top_candidates: list[CandidateMove] = Field(default_factory=list, max_length=5)
+    question: str = Field(..., min_length=1, max_length=500)
+    persona_id: str = Field(default="deepseek_master", min_length=1, max_length=64)
+    custom_persona: CustomPersonaConfig | None = None
+    win_rate_delta: float | None = Field(default=None, ge=-100.0, le=100.0)
+    alternative_candidates: list[CandidateMove] | None = Field(default=None, max_length=5)
+    actual_move_analysis: ActualMoveAnalysis | None = None
+    chat_history: list[CoachChatTurn] = Field(default_factory=list, max_length=12)
+    summary_context: str | None = Field(default=None, max_length=1000)
+
+    @field_validator("question", mode="before")
+    @classmethod
+    def _clean_question(cls, value: object) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("question must be a non-empty string")
+        return " ".join(value.strip().split())
+
+
+class CoachAskResponse(BaseModel):
+    """Response payload for POST /api/v1/ai/coach/ask."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    answer: str = Field(..., min_length=1, max_length=2000)
+    persona_id: str
+    model_provider: ModelProvider
+    model_name: str
+    is_fallback: bool = False
+    fallback_reason: FallbackReason | None = None
+    question_type: str | None = None
+    tactical_summary: str | None = None
     latency_ms: int = Field(..., ge=0)
     request_id: str
 

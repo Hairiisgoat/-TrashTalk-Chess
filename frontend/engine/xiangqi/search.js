@@ -6,6 +6,7 @@
 
 import { MATE_SCORE, createCandidateMove } from '../common/types.js'
 import { selectCandidatesByDifficulty } from '../common/candidatePicker.js'
+import { extractPvSequence } from '../common/pvHelper.js'
 import {
   XIANGQI_ROWS,
   XIANGQI_COLS,
@@ -15,7 +16,7 @@ import {
   unmakeXiangqiMoveInPlace
 } from './board.js'
 import { generateXiangqiLegalMoves, isXiangqiInCheck } from './rules.js'
-import { moveToXiangqiNotation } from './uci.js'
+import { moveToXiangqiNotation, getPieceDisplayLabel } from './uci.js'
 
 const PIECE_VALUES = {
   K: 10000,
@@ -333,12 +334,51 @@ export function searchXiangqiTopCandidates(state, options = {}) {
   })
   const candidates = []
 
+  const pickXiangqiFallbackMove = (curState, oppMoves) => {
+    let bestM = oppMoves[0]
+    let bestS = -Infinity
+    for (let j = 0; j < oppMoves.length; j++) {
+      const m = oppMoves[j]
+      const u = makeXiangqiMoveInPlace(curState, m)
+      const s = -evaluateXiangqiState(curState, curState.turn)
+      unmakeXiangqiMoveInPlace(curState, u)
+      if (s > bestS) {
+        bestS = s
+        bestM = m
+      }
+    }
+    return bestM
+  }
+
   for (let i = 0; i < selectedMoves.length; i++) {
     const move = selectedMoves[i]
     const notation = moveToXiangqiNotation(state, move)
     const undo = makeXiangqiMoveInPlace(workState, move)
     const isCheck = isXiangqiInCheck(workState, workState.turn)
     unmakeXiangqiMoveInPlace(workState, undo)
+
+    const pvInfo =
+      i < 3
+        ? extractPvSequence({
+            workState,
+            rootMove: move,
+            rootLegalMoves: legalMoves,
+            maxPlies: 3,
+            tt,
+            buildKey: buildStateKey,
+            makeMove: makeXiangqiMoveInPlace,
+            unmakeMove: unmakeXiangqiMoveInPlace,
+            getLegalMoves: generateXiangqiLegalMoves,
+            isInCheck: isXiangqiInCheck,
+            pickFallbackMove: pickXiangqiFallbackMove,
+            formatStep: (st, m, stepNum, _curLegal, chk, oppNoMoves) => {
+              const base = moveToXiangqiNotation(st, m)
+              const capTag = m.captured ? `(吃${getPieceDisplayLabel(m.captured) || m.captured})` : ''
+              const chkTag = chk ? (oppNoMoves ? '(绝杀)' : '(将)') : ''
+              return `${stepNum}. ${base}${capTag}${chkTag}`
+            }
+          })
+        : { pv: [], pvUci: [] }
 
     candidates.push(
       createCandidateMove({
@@ -348,7 +388,9 @@ export function searchXiangqiTopCandidates(state, options = {}) {
           : evaluateXiangqiState(state, rootSide),
         notation,
         is_capture: Boolean(move.captured),
-        is_check: isCheck
+        is_check: isCheck,
+        pv: pvInfo.pv,
+        pv_uci: pvInfo.pvUci
       })
     )
   }

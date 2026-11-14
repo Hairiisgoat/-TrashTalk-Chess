@@ -47,6 +47,61 @@ class ClaudeClient(BaseLLMClient):
         content = self._extract_text(data)
         return extract_json_payload(content)
 
+    async def generate_text(
+        self,
+        *,
+        model_name: str,
+        system_prompt: str,
+        user_prompt: str,
+        history_messages: list[dict[str, str]] | None = None,
+        temperature: float = 0.6,
+        max_tokens: int = 700,
+        api_key_override: str | None = None,
+        base_url_override: str | None = None,
+    ) -> str:
+        api_key, base_url = self._resolve_credentials(
+            api_key_override=api_key_override,
+            base_url_override=base_url_override,
+        )
+        url = f"{base_url}/messages"
+        headers = {
+            "x-api-key": api_key,
+            "anthropic-version": self.ANTHROPIC_VERSION,
+            "Content-Type": "application/json",
+        }
+        messages: list[dict[str, str]] = []
+        if history_messages:
+            for item in history_messages:
+                role = item.get("role")
+                content = item.get("content")
+                if role not in {"user", "assistant"} or not content:
+                    continue
+                if not messages and role != "user":
+                    continue
+                if messages and messages[-1]["role"] == role:
+                    messages[-1] = {
+                        "role": role,
+                        "content": f"{messages[-1]['content']}\n{content}",
+                    }
+                else:
+                    messages.append({"role": role, "content": content})
+        if messages and messages[-1]["role"] == "user":
+            messages[-1] = {
+                "role": "user",
+                "content": f"{messages[-1]['content']}\n\n{user_prompt}",
+            }
+        else:
+            messages.append({"role": "user", "content": user_prompt})
+        payload: dict[str, Any] = {
+            "model": model_name,
+            "system": system_prompt,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        data = await self._post_json(url=url, headers=headers, payload=payload)
+        return self._extract_text(data).strip()
+
     async def test_connection(
         self,
         *,
