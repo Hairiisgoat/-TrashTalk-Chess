@@ -12,8 +12,11 @@ import {
   getChessGameStatus
 } from '../engine/chess/rules.js'
 import { searchChessTopCandidates } from '../engine/chess/search.js'
-import { selectCandidatesByDifficulty } from '../engine/common/candidatePicker.js'
-import { CHESS_UCI_REGEX } from '../engine/common/types.js'
+import {
+  pickTieredCandidatesWithTags,
+  selectCandidatesByDifficulty
+} from '../engine/common/candidatePicker.js'
+import { CHESS_UCI_REGEX, MATE_SCORE } from '../engine/common/types.js'
 
 test('Chess FEN parse & serialize round-trip', () => {
   const state = parseChessFen(INITIAL_CHESS_FEN)
@@ -93,52 +96,70 @@ test('Chess Alpha-Beta finds winning move and finishes within 500ms', () => {
   }
 })
 
-test('Chess casual mode searches depth 2 and mixes gentle suboptimal candidates without hanging major pieces', () => {
+test('Chess easy mode searches depth <= 2 and samples mixed pool with pacing/flaw tags', () => {
   const fen = 'r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 2 3'
   const state = parseChessFen(fen)
   const result = searchChessTopCandidates(state, {
     maxDepth: 2,
-    topK: 5,
+    topK: 6,
     timeBudgetMs: 420,
-    difficulty: 'casual'
+    difficulty: 'easy'
   })
 
-  assert.equal(result.depthReached, 2)
-  assert.ok(result.candidates.length >= 4 && result.candidates.length <= 10)
-  const topScore = result.candidates[0].score_cp
-  const tailScore = result.candidates[result.candidates.length - 1].score_cp
-  const gap = topScore - tailScore
-  assert.ok(gap > 0 && gap <= 160, `Expected gentle gap (0, 160] cp, got ${gap}`)
+  assert.ok(result.depthReached >= 1 && result.depthReached <= 2)
+  assert.ok(result.candidates.length >= 5 && result.candidates.length <= 6)
+  for (const c of result.candidates) {
+    assert.ok(c.score_cp > -(MATE_SCORE - 500), 'must never include immediate self-mate move')
+    assert.ok(
+      c.tactics_tags.includes('节奏放缓') || c.tactics_tags.includes('大意漏防'),
+      `expected pacing/flaw tag, got ${c.tactics_tags}`
+    )
+  }
 })
 
-test('selectCandidatesByDifficulty picks -40..-130cp moves and filters out blatant piece blunders in casual mode', () => {
-  const moves = [
-    { uci: 'a1a2' },
-    { uci: 'b1b2' },
-    { uci: 'c1c2' },
-    { uci: 'd1d2' },
-    { uci: 'e1e2' },
-    { uci: 'f1f2' },
-    { uci: 'g1g2' },
-    { uci: 'h1h2' }
-  ]
+test('Tiered candidate picker enforces easy mixed pool, medium rank-1 shielding (unless mate), and hard <=50cp top-3', () => {
+  const moves = Array.from({ length: 14 }, (_, i) => ({ uci: `a${i}b${i}` }))
   const scores = new Map([
-    ['a1a2', 50],
-    ['b1b2', 40],
-    ['c1c2', 35],
-    ['d1d2', 20],
-    ['e1e2', -10],   // delta -60 (in -40..-130)
-    ['f1f2', -55],   // delta -105 (in -40..-130)
-    ['g1g2', -280],  // delta -330 (blatant blunder -> must be filtered out)
-    ['h1h2', -850]   // delta -900 (blatant blunder -> must be filtered out)
+    ['a0b0', 120],  // #1 best
+    ['a1b1', 90],   // #2 (-30cp)
+    ['a2b2', 75],   // #3 (-45cp)
+    ['a3b3', 60],   // #4 (-60cp)
+    ['a4b4', 50],   // #5 (-70cp)
+    ['a5b5', 45],   // #6 (-75cp -> mid -30..-120)
+    ['a6b6', 30],   // #7 (-90cp -> mid -30..-120)
+    ['a7b7', 10],   // #8 (-110cp -> mid -30..-120)
+    ['a8b8', -10],  // #9 (-130cp -> local flaw blunder)
+    ['a9b9', -80],  // #10 (-200cp -> local flaw blunder)
+    ['a10b10', -160],
+    ['a11b11', -260],
+    ['a12b12', -29300], // self-mate -> must avoid
+    ['a13b13', -29400]
   ])
 
-  const picked = selectCandidatesByDifficulty(moves, scores, { topK: 5, difficulty: 'casual' })
-  const pickedUcis = picked.map((m) => m.uci)
-  assert.ok(pickedUcis.includes('e1e2'))
-  assert.ok(pickedUcis.includes('f1f2'))
-  assert.ok(!pickedUcis.includes('g1g2'))
-  assert.ok(!pickedUcis.includes('h1h2'))
+  // 1. easy: 5~6 moves, 跳过 #1/#2，包含 #3~#4、中游(-30~-120)、1个非送王漏招，且带标签
+  const easyRes = pickTieredCandidatesWithTags(moves, scores, { difficulty: 'easy' })
+  const easyUcis = easyRes.selectedMoves.map((m) => m.uci)
+  assert.ok(easyUcis.length >= 5 && easyUcis.length <= 6)
+  assert.ok(!easyUcis.includes('a0b0') && !easyUcis.includes('a1b1'))
+  assert.ok(easyUcis.includes('a2b2')) // #3 steady
+  assert.ok(!easyUcis.includes('a12b12') && !easyUcis.includes('a13b13'))
+  const allEasyTags = [...easyRes.tagsByUci.values()].flat()
+  assert.ok(allEasyTags.includes('节奏放缓'))
+  assert.ok(allEasyTags.includes('大意漏防'))
+
+  // 2. medium: 非绝杀时屏蔽 #1，取 #2~#6
+  const medUcis = selectCandidatesByDifficulty(moves, scores, { difficulty: 'medium' }).map((m) => m.uci)
+  assert.deepEqual(medUcis, ['a1b1', 'a2b2', 'a3b3', 'a4b4', 'a5b5'])
+
+  // 2b. medium 在必杀局 (>= 29000) 时不屏蔽 #1 绝杀招
+  const mateScores = new Map(scores)
+  mateScores.set('a0b0', MATE_SCORE - 10)
+  const medMateUcis = selectCandidatesByDifficulty(moves, mateScores, { difficulty: 'medium' }).map((m) => m.uci)
+  assert.equal(medMateUcis[0], 'a0b0')
+
+  // 3. hard/master: 仅传分差 ≤ 50cp 的 Top-1 ~ Top-3
+  const hardUcis = selectCandidatesByDifficulty(moves, scores, { difficulty: 'hard' }).map((m) => m.uci)
+  assert.deepEqual(hardUcis, ['a0b0', 'a1b1', 'a2b2']) // a2b2 = 75 (delta -45 <= 50)
 })
 
 test('Chess Top-3 candidates include readable 2-3 ply PV sequences and matching pv_uci', () => {

@@ -15,6 +15,7 @@ import {
 import { createHistoryItem, HISTORY_SIDE, MATE_SCORE } from '../engine/common/types.js'
 import { cpToWinRate, calcWinRateDelta } from '../engine/common/evaluator.js'
 import { buildCoachTacticalContext } from '../engine/common/tacticsAnalyzer.js'
+import { normalizeDifficulty } from '../engine/common/candidatePicker.js'
 import {
   getInitialFen,
   parseFen,
@@ -196,14 +197,17 @@ function setConfig({ gameType, difficulty }) {
   if (gameType && (gameType === GAME_TYPES.XIANGQI || gameType === GAME_TYPES.CHESS)) {
     state.gameType = gameType
   }
-  if (difficulty && DIFFICULTIES.some((d) => d.id === difficulty)) {
-    state.difficulty = difficulty
+  if (difficulty) {
+    const normalized = normalizeDifficulty(difficulty)
+    if (DIFFICULTIES.some((d) => d.id === normalized)) {
+      state.difficulty = normalized
+    }
   }
 }
 
 function startNewGame({ gameType, difficulty, greeting } = {}) {
   if (gameType) state.gameType = gameType
-  if (difficulty) state.difficulty = difficulty
+  if (difficulty) state.difficulty = normalizeDifficulty(difficulty)
 
   state.sessionId += 1
   const fen = getInitialFen(state.gameType)
@@ -453,24 +457,30 @@ async function triggerAiTurn(personaOrId) {
       return null
     }
 
-    // 用端侧前瞻搜索的最优分值修正玩家刚走出这一步的真实评估与“战犯步”判定
+    // 用端侧前瞻搜索的客观最优分值修正玩家刚走出这一步的真实评估与“战犯步”判定
     const bestReplyCand = searchRes.candidates[0]
+    const trueEvalCp =
+      typeof searchRes.bestEvalCp === 'number'
+        ? searchRes.bestEvalCp
+        : bestReplyCand
+          ? bestReplyCand.score_cp
+          : state.evalCpForAi
     const lastEntry = state.moveHistory[state.moveHistory.length - 1]
     if (lastEntry && lastEntry.side === HISTORY_SIDE.PLAYER && bestReplyCand) {
       const prevBeforePlayerAiWr =
         state.moveHistory.length >= 2
           ? state.moveHistory[state.moveHistory.length - 2].win_rate_for_ai
           : state.initialWinRateForAi
-      const refinedAiWr = cpToWinRate(bestReplyCand.score_cp)
+      const refinedAiWr = cpToWinRate(trueEvalCp)
       const refinedPlayerDelta = Number(
         (100 - refinedAiWr - (100 - prevBeforePlayerAiWr)).toFixed(1)
       )
-      lastEntry.score_cp = bestReplyCand.score_cp
+      lastEntry.score_cp = trueEvalCp
       lastEntry.win_rate_for_ai = refinedAiWr
       lastEntry.win_rate = Number((100 - refinedAiWr).toFixed(1))
       lastEntry.win_rate_delta = refinedPlayerDelta
       lastEntry.is_blunder = refinedPlayerDelta < -15.0
-      state.evalCpForAi = bestReplyCand.score_cp
+      state.evalCpForAi = trueEvalCp
       state.winRateForAi = refinedAiWr
       state.winRateDelta = Number((-refinedPlayerDelta).toFixed(1))
     }

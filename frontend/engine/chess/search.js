@@ -5,7 +5,10 @@
  */
 
 import { MATE_SCORE, createCandidateMove } from '../common/types.js'
-import { selectCandidatesByDifficulty } from '../common/candidatePicker.js'
+import {
+  normalizeDifficulty,
+  pickTieredCandidatesWithTags
+} from '../common/candidatePicker.js'
 import { extractPvSequence, formatChessPvStep } from '../common/pvHelper.js'
 import {
   CHESS_SIZE,
@@ -173,7 +176,13 @@ export function searchChessTopCandidates(state, options = {}) {
     timeBudgetMs = 420,
     difficulty = 'balanced'
   } = options
-  const effectiveMaxDepth = difficulty === 'casual' ? Math.min(maxDepth, 2) : maxDepth
+  const normDifficulty = normalizeDifficulty(difficulty)
+  const effectiveMaxDepth =
+    normDifficulty === 'casual'
+      ? Math.min(maxDepth, 2)
+      : normDifficulty === 'balanced'
+        ? Math.min(maxDepth, 3)
+        : maxDepth
 
   const workState = cloneChessState(state)
   const rootSide = workState.turn
@@ -331,11 +340,15 @@ export function searchChessTopCandidates(state, options = {}) {
     return sb - sa
   })
 
-  const selectedMoves = selectCandidatesByDifficulty(rankedMoves, rootScores, {
-    topK,
-    difficulty,
-    mateScore: MATE_SCORE
-  })
+  const { selectedMoves, tagsByUci, bestEvalCp } = pickTieredCandidatesWithTags(
+    rankedMoves,
+    rootScores,
+    {
+      topK,
+      difficulty: normDifficulty,
+      mateScore: MATE_SCORE
+    }
+  )
   const candidates = []
 
   const pickChessFallbackMove = (curState, oppMoves) => {
@@ -392,13 +405,15 @@ export function searchChessTopCandidates(state, options = {}) {
         is_capture: Boolean(move.captured) || Boolean(move.isEnPassant),
         is_check: isCheck,
         pv: pvInfo.pv,
-        pv_uci: pvInfo.pvUci
+        pv_uci: pvInfo.pvUci,
+        tactics_tags: tagsByUci.get(move.uci) || []
       })
     )
   }
 
   return {
     candidates,
+    bestEvalCp,
     depthReached,
     elapsedMs: Date.now() - startTime,
     nodes

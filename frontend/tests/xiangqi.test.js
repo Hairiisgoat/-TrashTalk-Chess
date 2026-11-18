@@ -115,23 +115,43 @@ test('Xiangqi uci coordinate round-trip', () => {
   assert.deepEqual(xiangqiUciToCoords(uci), { fromR: 7, fromC: 7, toR: 7, toC: 4 })
 })
 
-test('Xiangqi casual mode searches depth 2 and appends gentle suboptimal moves at the tail', () => {
+test('Xiangqi easy/casual mode searches depth <= 2 and outputs 5-6 mixed candidates with tags', () => {
   const state = parseXiangqiFen(
     'rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C2C4/9/RNBAKABNR b - - 0 1'
   )
   const result = searchXiangqiTopCandidates(state, {
     maxDepth: 2,
-    topK: 5,
+    topK: 6,
     timeBudgetMs: 420,
-    difficulty: 'casual'
+    difficulty: 'easy'
   })
 
-  assert.equal(result.depthReached, 2)
-  assert.ok(result.candidates.length >= 4 && result.candidates.length <= 10)
-  const topScore = result.candidates[0].score_cp
-  const tailScore = result.candidates[result.candidates.length - 1].score_cp
-  const gap = topScore - tailScore
-  assert.ok(gap > 0 && gap <= 160, `Expected gentle gap (0, 160] cp, got ${gap}`)
+  assert.ok(result.depthReached >= 1 && result.depthReached <= 2)
+  assert.ok(result.candidates.length >= 5 && result.candidates.length <= 6)
+  for (const c of result.candidates) {
+    assert.ok(
+      c.tactics_tags.includes('节奏放缓') || c.tactics_tags.includes('大意漏防'),
+      `expected 节奏放缓/大意漏防 tag, got ${c.tactics_tags}`
+    )
+  }
+})
+
+test('Xiangqi hard/master mode keeps only Top-1..3 candidates within 50cp', () => {
+  const state = parseXiangqiFen(
+    'rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C2C4/9/RNBAKABNR b - - 0 1'
+  )
+  const result = searchXiangqiTopCandidates(state, {
+    maxDepth: 3,
+    topK: 5,
+    timeBudgetMs: 420,
+    difficulty: 'master'
+  })
+
+  assert.ok(result.candidates.length >= 1 && result.candidates.length <= 3)
+  const best = result.candidates[0].score_cp
+  for (const c of result.candidates) {
+    assert.ok(best - c.score_cp <= 50)
+  }
 })
 
 test('Xiangqi Top-3 candidates include readable 2-3 ply Chinese PV sequences and pv_uci', () => {

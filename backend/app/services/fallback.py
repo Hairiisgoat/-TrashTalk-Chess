@@ -5,29 +5,29 @@ from app.schemas.move import MAX_COMMENT_LENGTH, MoveRequest, MoveResponse
 
 _PERSONA_FALLBACK_LINES: dict[str, dict[str, tuple[str, Emotion]]] = {
     "deepseek_master": {
-        "check": ("（折扇轻摇）且看老夫这一步将杀试探，小友接得住么？", Emotion.SMUG),
-        "capture": ("（沉吟片刻）此子既送上门来，老夫便不客气笑纳了。", Emotion.SMUG),
-        "ahead": ("（负手而立）大局已明，且看我这一步稳扎稳打。", Emotion.SMUG),
-        "behind": ("（眉头微皱）局势虽略紧，老夫这一手仍自有章法。", Emotion.NEUTRAL),
-        "neutral": ("（沉思片刻）且看我这一步稳扎稳打。", Emotion.NEUTRAL),
+        "check": ("将军，看你怎么接！", Emotion.SMUG),
+        "capture": ("此子老夫笑纳了", Emotion.SMUG),
+        "ahead": ("局势尽在掌握", Emotion.SMUG),
+        "behind": ("这手有点棘手", Emotion.NEUTRAL),
+        "neutral": ("小友请接招", Emotion.NEUTRAL),
     },
     "gpt_showman": {
-        "check": ("Signal 稍微抖了一下？没关系，将军！看本天才盲猜也能压制你！", Emotion.TAUNTING),
-        "capture": ("网络略微卡顿，但不妨碍我顺手收下这颗棋子~", Emotion.SMUG),
-        "ahead": ("弹幕刷起来！哪怕闭着眼睛走这步，优势依然在我！", Emotion.SMUG),
-        "behind": ("刚才算作本天才让两秒加载动画，看我这步强行稳住！", Emotion.PANICKED),
-        "neutral": ("脑内弹幕太多稍微卡了一下，这步直觉流接好了！", Emotion.NEUTRAL),
+        "check": ("将军！接得住吗？", Emotion.TAUNTING),
+        "capture": ("感谢送来的大礼~", Emotion.SMUG),
+        "ahead": ("节奏彻底拿下！", Emotion.SMUG),
+        "behind": ("哎呀这步有点东西", Emotion.PANICKED),
+        "neutral": ("本能光速落子！", Emotion.NEUTRAL),
     },
     "claude_zen": {
-        "check": ("请容我先行一步将军，哪怕思绪偶有迟滞，礼数也不能少呢。", Emotion.SMUG),
-        "capture": ("您把这枚棋子放在这里，是在邀请我收下吗？那我便恭敬不如从命了。", Emotion.SMUG),
-        "ahead": ("茶汤正好，局势也如预期般平稳推进呢。", Emotion.NEUTRAL),
-        "behind": ("稍微思考久了一点点，不过这一步应对应当还算得体呀。", Emotion.NEUTRAL),
-        "neutral": ("（浅啜一口红茶）这一步虽然平淡，却也自有其分寸呢。", Emotion.NEUTRAL),
+        "check": ("请容我先行将军呢", Emotion.SMUG),
+        "capture": ("那我便恭敬收下了", Emotion.SMUG),
+        "ahead": ("局势如预期推进呢", Emotion.NEUTRAL),
+        "behind": ("容我沉着应这一步", Emotion.NEUTRAL),
+        "neutral": ("静候您的回应呀", Emotion.NEUTRAL),
     },
 }
 
-_DEFAULT_FALLBACK_LINE = ("（沉思片刻）且看我这一步稳扎稳打。", Emotion.NEUTRAL)
+_DEFAULT_FALLBACK_LINE = ("看你怎么接", Emotion.NEUTRAL)
 
 
 def _select_fallback_line(req: MoveRequest) -> tuple[str, Emotion]:

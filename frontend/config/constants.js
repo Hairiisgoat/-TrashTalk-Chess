@@ -30,24 +30,24 @@ export const DIFFICULTIES = [
   {
     id: 'casual',
     label: '娱乐放水',
-    shortLabel: '娱乐',
-    desc: '保留基本算路、偶露小破绽的势均力敌陪练模式',
+    shortLabel: '简单',
+    desc: '混合中下游与偶发漏招，留足反击空间（depth=2）',
     searchDepth: 2,
     tagColor: '#10B981'
   },
   {
     id: 'balanced',
     label: '均衡竞技',
-    shortLabel: '均衡',
-    desc: '棋力与嘴炮并重，步步留有心理博弈',
+    shortLabel: '中等',
+    desc: '稳健与次优并重，除必杀外屏蔽第一杀招（depth=3）',
     searchDepth: 3,
     tagColor: '#3B82F6'
   },
   {
     id: 'tryhard',
     label: '全力认真',
-    shortLabel: '全力',
-    desc: '锁定最优杀招，言辞犀利毫不留情',
+    shortLabel: '大师',
+    desc: '锁定50分差内Top-3杀招，高强度压迫（depth=4）',
     searchDepth: 4,
     tagColor: '#EF4444'
   }
@@ -110,74 +110,29 @@ export const DEFAULT_PERSONAS = [
  */
 export const LOCAL_FALLBACK_COMMENTS = {
   deepseek_master: {
-    smug: [
-      '就这？老夫闭着眼都能拆穿你的套路。',
-      '算路浅了些，这一步我早就等在半路了。'
-    ],
-    taunting: [
-      '棋品且不论，这步送礼倒是很体面。',
-      '信号虽隔山海，斩你中路却只需一念之间。'
-    ],
-    panicked: [
-      '嘶……这步倒是有点门道，容老夫端杯茶压压惊。',
-      '不错，竟逼得老夫动用本能应手了。'
-    ],
-    impressed: [
-      '好一手妙棋！看来今日不能再让你三分了。',
-      '有点意思，这招确实在我预料之外。'
-    ],
-    neutral: [
-      '网络信号飘忽，老夫先凭直觉落这一子。',
-      '且看我这步稳扎稳打，小友请接招。'
-    ]
+    smug: ['看你怎么接', '这一手早就等你'],
+    taunting: ['这礼老夫笑纳了', '破绽太明显了'],
+    panicked: ['嘶……有点门道', '这手倒是棘手'],
+    impressed: ['好一手妙棋！', '小友有点东西'],
+    neutral: ['小友请接招', '老夫稳步推进']
   },
   gpt_showman: {
-    smug: [
-      'Wait a second，你刚刚是不是手滑了？感谢老铁送的大礼！',
-      '这步操作我给 82 分，剩下 18 分以 666 的形式送给你。'
-    ],
-    taunting: [
-      'Bro 这破绽比我凌晨两点写的代码还明显！',
-      '就算云端断线，我靠肌肉记忆也能拿捏你！'
-    ],
-    panicked: [
-      'Whoa! 这步有点东西啊，我的 CPU 温度突然飙升了！',
-      '等一下等一下，这招不讲武德啊！'
-    ],
-    impressed: [
-      'Sheeeesh！这一手直接把我看精神了！',
-      'Respect！这波计算确实拉满了。'
-    ],
-    neutral: [
-      '信号不太好，本天才先靠本能光速落这一步！',
-      '本地算力上线！这波我直接快刀斩乱麻。'
-    ]
+    smug: ['感谢送礼！', '踩进我的节奏了'],
+    taunting: ['破绽太明显啦', '看你怎么接这招'],
+    panicked: ['哎呀CPU冒烟了', '这步不讲武德！'],
+    impressed: ['漂亮！有点东西', '这手确实强'],
+    neutral: ['本能光速落子！', '该你表演了']
   },
   claude_zen: {
-    smug: [
-      '胜负之外皆是心境，只是你这一步，失算得略微明显了些。',
-      '请不必自责，大多数棋手在这个局面都会犯同样的错。'
-    ],
-    taunting: [
-      '你似乎很急切地想证明什么，可惜棋盘最诚实。',
-      '即使离线思考，这一步的必然性也清晰可见。'
-    ],
-    panicked: [
-      '很有创造力的一步，让我不得不重新审视整片棋局。',
-      '嗯……这一手颇有几分禅意，确实让我压力倍增。'
-    ],
-    impressed: [
-      '精彩。能走出这步棋，说明你确实读懂了局面的暗流。',
-      '佩服，这一着兼顾了次序与远见。'
-    ],
-    neutral: [
-      '此刻信号微弱，我且循着棋理落子，静候你的回应。',
-      '心如止水，先走这步最朴实却最稳妥的应手。'
-    ]
+    smug: ['似乎失算了呢', '这步我笑纳了呀'],
+    taunting: ['棋盘很诚实呢', '看您如何化解呀'],
+    panicked: ['真是意外的一步', '得重新审视了呢'],
+    impressed: ['好棋，颇有远见', '令人佩服的一手'],
+    neutral: ['且听这一步回应', '局势平稳推进中']
   }
 }
 
-export const DEFAULT_FALLBACK_COMMENT = '信号不太好，我先按本能走这步！'
+export const DEFAULT_FALLBACK_COMMENT = '看你怎么接'
 
 export const MAX_UNDO_COUNT = 2
 

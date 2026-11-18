@@ -65,7 +65,7 @@ export function buildLocalFallbackMoveResponse(payload, reason = 'network_offlin
 
   return {
     selected_move: topCandidate.uci,
-    comment: comment.slice(0, 140),
+    comment: String(comment || DEFAULT_FALLBACK_COMMENT).slice(0, 15),
     emotion,
     persona_id: personaId,
     model_provider: 'fallback',
@@ -321,7 +321,8 @@ export async function requestAiMove(payload) {
         score_cp: c.score_cp,
         notation: c.notation || '',
         is_capture: Boolean(c.is_capture),
-        is_check: Boolean(c.is_check)
+        is_check: Boolean(c.is_check),
+        tactics_tags: Array.isArray(c.tactics_tags) ? c.tactics_tags.slice(0, 8) : []
       })),
       persona_id: payload.persona_id,
       difficulty: payload.difficulty,
@@ -353,7 +354,7 @@ export async function requestAiMove(payload) {
     return {
       ...res,
       emotion: VALID_EMOTIONS.has(res.emotion) ? res.emotion : 'neutral',
-      comment: String(res.comment || DEFAULT_FALLBACK_COMMENT).slice(0, 140),
+      comment: String(res.comment || DEFAULT_FALLBACK_COMMENT).slice(0, 15),
       is_local_fallback: false
     }
   } catch (err) {

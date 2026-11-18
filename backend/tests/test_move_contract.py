@@ -11,8 +11,9 @@ from pydantic import ValidationError
 from app.api.v1.ai import get_http_client
 from app.core.config import Settings, get_settings
 from app.main import create_app
-from app.personas.prompts import build_user_prompt
-from app.schemas.move import LLMDecisionOutput, MoveRequest
+from app.personas.prompts import build_user_prompt, get_system_prompt
+from app.schemas.common import Difficulty
+from app.schemas.move import LLMDecisionOutput, MAX_COMMENT_LENGTH, MoveRequest
 
 XIANGQI_PAYLOAD: dict[str, Any] = {
     "game_type": "xiangqi",
@@ -199,7 +200,7 @@ def test_llm_decision_output_whitelist_and_clamping() -> None:
         context={"allowed_moves": allowed},
     )
     assert valid.selected_move == "b9c7"
-    assert len(valid.comment) == 140
+    assert len(valid.comment) == MAX_COMMENT_LENGTH == 15
     assert valid.emotion.value == "smug"
 
     with pytest.raises(ValidationError):
@@ -216,51 +217,47 @@ def test_llm_decision_output_whitelist_and_clamping() -> None:
 
 
 def test_prompt_reflects_difficulty_and_win_rate_delta() -> None:
-    casual_even_payload = {
+    easy_payload = {
         **CHESS_PAYLOAD,
-        "difficulty": "casual",
+        "difficulty": "easy",
         "win_rate_delta": 18.0,
         "candidates": [
-            {"uci": "e7e5", "score_cp": 20, "notation": "e5", "is_capture": False, "is_check": False},
-            {"uci": "c7c5", "score_cp": 5, "notation": "c5", "is_capture": False, "is_check": False},
-            {"uci": "g8f6", "score_cp": -10, "notation": "Nf6", "is_capture": False, "is_check": False},
-            {"uci": "a7a6", "score_cp": -45, "notation": "a6", "is_capture": False, "is_check": False},
-            {"uci": "f7f5", "score_cp": -95, "notation": "f5", "is_capture": False, "is_check": False},
+            {"uci": "e7e5", "score_cp": -15, "notation": "e5", "is_capture": False, "is_check": False, "tactics_tags": ["节奏放缓"]},
+            {"uci": "c7c5", "score_cp": -45, "notation": "c5", "is_capture": False, "is_check": False, "tactics_tags": ["节奏放缓"]},
+            {"uci": "g8f6", "score_cp": -85, "notation": "Nf6", "is_capture": False, "is_check": False, "tactics_tags": ["节奏放缓"]},
+            {"uci": "a7a6", "score_cp": -105, "notation": "a6", "is_capture": False, "is_check": False, "tactics_tags": ["节奏放缓"]},
+            {"uci": "f7f5", "score_cp": -210, "notation": "f5", "is_capture": False, "is_check": False, "tactics_tags": ["大意漏防"]},
         ],
     }
-    casual_behind_payload = {
-        **CHESS_PAYLOAD,
-        "difficulty": "casual",
-        "win_rate_delta": -16.0,
-        "candidates": [
-            {"uci": "e7e5", "score_cp": -120, "notation": "e5", "is_capture": False, "is_check": False},
-            {"uci": "c7c5", "score_cp": -135, "notation": "c5", "is_capture": False, "is_check": False},
-            {"uci": "g7g5", "score_cp": -220, "notation": "g5", "is_capture": False, "is_check": False},
-        ],
-    }
-    casual_even_req = MoveRequest.model_validate(casual_even_payload)
-    casual_behind_req = MoveRequest.model_validate(casual_behind_payload)
-    tryhard_req = MoveRequest.model_validate({**CHESS_PAYLOAD, "difficulty": "tryhard", "win_rate_delta": -20.0})
+    medium_req = MoveRequest.model_validate({**CHESS_PAYLOAD, "difficulty": "medium", "win_rate_delta": 0.0})
+    hard_req = MoveRequest.model_validate({**CHESS_PAYLOAD, "difficulty": "hard", "win_rate_delta": -20.0})
+    master_req = MoveRequest.model_validate({**CHESS_PAYLOAD, "difficulty": "master"})
 
-    casual_even_prompt = build_user_prompt(casual_even_req)
-    casual_behind_prompt = build_user_prompt(casual_behind_req)
-    tryhard_prompt = build_user_prompt(tryhard_req)
+    easy_req = MoveRequest.model_validate(easy_payload)
+    assert easy_req.difficulty == Difficulty.CASUAL
+    assert medium_req.difficulty == Difficulty.BALANCED
+    assert hard_req.difficulty == Difficulty.TRYHARD
+    assert master_req.difficulty == Difficulty.TRYHARD
 
-    assert "120" not in casual_even_prompt
-    assert "局势自适应放水" in casual_even_prompt
-    assert "60%" in casual_even_prompt and "40%" in casual_even_prompt
-    assert "[稳健对攻]" in casual_even_prompt
-    assert "[温和次优-小破绽]" in casual_even_prompt
-    assert "+18.0%" in casual_even_prompt
+    easy_prompt = build_user_prompt(easy_req)
+    medium_prompt = build_user_prompt(medium_req)
+    hard_prompt = build_user_prompt(hard_req)
+    sys_prompt = get_system_prompt("deepseek_master")
 
-    assert "立即停止放水" in casual_behind_prompt
-    assert "candidates[0..1]" in casual_behind_prompt
-    assert "[防守反击首选]" in casual_behind_prompt
-    assert "[劣势禁选-避免崩盘]" in casual_behind_prompt
+    assert "15 个汉字以内" in sys_prompt
+    assert "节奏放缓" in easy_prompt
+    assert "大意漏防" in easy_prompt
+    assert "严禁每步都挑最高分走法" in easy_prompt
+    assert "15个汉字以内" in easy_prompt
+    assert "+18.0%" in easy_prompt
 
-    assert "15" in tryhard_prompt
-    assert "绝不放水" in tryhard_prompt
-    assert "-20.0%" in tryhard_prompt
+    assert "均衡选择" in medium_prompt
+    assert "次优试探" in medium_prompt
+
+    assert "绝不放水" in hard_prompt
+    assert "score_cp" in hard_prompt
+    assert "[最优杀招]" in hard_prompt
+    assert "-20.0%" in hard_prompt
 
 
 def test_error_codes_for_invalid_inputs_and_unconfigured_provider() -> None:

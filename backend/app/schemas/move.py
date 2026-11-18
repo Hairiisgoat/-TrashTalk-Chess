@@ -13,7 +13,17 @@ from pydantic import (
 
 from app.schemas.common import Difficulty, Emotion, FallbackReason, GameType, ModelProvider
 
-MAX_COMMENT_LENGTH = 140
+MAX_COMMENT_LENGTH = 15
+
+_DIFFICULTY_ALIASES: dict[str, str] = {
+    "easy": "casual",
+    "casual": "casual",
+    "medium": "balanced",
+    "balanced": "balanced",
+    "hard": "tryhard",
+    "master": "tryhard",
+    "tryhard": "tryhard",
+}
 
 
 class CandidateMove(BaseModel):
@@ -82,6 +92,14 @@ class MoveRequest(BaseModel):
     win_rate_delta: float = Field(..., ge=-100.0, le=100.0)
     move_number: int | None = Field(default=None, ge=1)
     custom_persona: CustomPersonaConfig | None = None
+
+    @field_validator("difficulty", mode="before")
+    @classmethod
+    def _normalize_difficulty_alias(cls, value: object) -> object:
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            return _DIFFICULTY_ALIASES.get(lowered, lowered)
+        return value
 
 
 class TestConnectionRequest(BaseModel):
