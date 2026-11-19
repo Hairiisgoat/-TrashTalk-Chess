@@ -115,24 +115,25 @@ test('Xiangqi uci coordinate round-trip', () => {
   assert.deepEqual(xiangqiUciToCoords(uci), { fromR: 7, fromC: 7, toR: 7, toC: 4 })
 })
 
-test('Xiangqi easy/casual mode searches depth <= 2 and outputs 5-6 mixed candidates with tags', () => {
+test('Xiangqi easy/casual mode keeps depth=2 and outputs 4-5 gentle steady/slow candidates without forced blunders', () => {
   const state = parseXiangqiFen(
     'rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C2C4/9/RNBAKABNR b - - 0 1'
   )
   const result = searchXiangqiTopCandidates(state, {
     maxDepth: 2,
-    topK: 6,
+    topK: 5,
     timeBudgetMs: 420,
     difficulty: 'easy'
   })
 
-  assert.ok(result.depthReached >= 1 && result.depthReached <= 2)
-  assert.ok(result.candidates.length >= 5 && result.candidates.length <= 6)
+  assert.equal(result.depthReached, 2)
+  assert.ok(result.candidates.length >= 4 && result.candidates.length <= 5)
   for (const c of result.candidates) {
     assert.ok(
-      c.tactics_tags.includes('节奏放缓') || c.tactics_tags.includes('大意漏防'),
-      `expected 节奏放缓/大意漏防 tag, got ${c.tactics_tags}`
+      c.tactics_tags.includes('正常稳健') || c.tactics_tags.includes('节奏放缓'),
+      `expected 正常稳健/节奏放缓 tag, got ${c.tactics_tags}`
     )
+    assert.ok(!c.tactics_tags.includes('大意漏防'))
   }
 })
 

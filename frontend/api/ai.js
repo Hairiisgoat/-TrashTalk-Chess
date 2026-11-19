@@ -195,36 +195,38 @@ function formatCandidateForCoach(cand) {
   }
 }
 
+function extractPlainPieceName(cand) {
+  if (!cand) return '主力棋子'
+  const text = `${(Array.isArray(cand.pv) && cand.pv[0]) || ''} ${cand.notation || ''}`
+  const cnMatch = text.match(/[王后车象相马炮兵卒仕士帅将]/)
+  if (cnMatch) return cnMatch[0]
+  const notation = String(cand.notation || '').trim()
+  const sanMap = { K: '王', Q: '后', R: '车', B: '象', N: '马' }
+  if (notation && sanMap[notation[0]]) return sanMap[notation[0]]
+  if (/^[a-h]/.test(notation)) return '小兵'
+  return '主力棋子'
+}
+
 export function buildLocalCoachFallback(payload, elapsedMs = 0) {
-  const moveLabel = payload.last_move_notation || '当前开局'
   const cands =
     (Array.isArray(payload.alternative_candidates) && payload.alternative_candidates.length > 0
       ? payload.alternative_candidates
       : payload.top_candidates) || []
-  const bestLine = cands.length
-    ? cands
-        .slice(0, 3)
-        .map((c, idx) => {
-          const pvStr = Array.isArray(c.pv) && c.pv.length > 0 ? ` | 主变: ${c.pv.join(' -> ')}` : ''
-          const tagStr =
-            Array.isArray(c.tactics_tags) && c.tactics_tags.length > 0
-              ? ` [${c.tactics_tags.join('、')}]`
-              : ''
-          return `${idx + 1}. ${c.notation || c.uci} (${c.score_cp >= 0 ? '+' : ''}${c.score_cp})${tagStr}${pvStr}`
-        })
-        .join('\n')
-    : '当前局面已无后续合法着法。'
-  const deltaNote =
-    typeof payload.win_rate_delta === 'number' && payload.win_rate_delta < -15
-      ? `这一步后我方胜率骤降 ${payload.win_rate_delta.toFixed(1)}%，属于关键战犯步！`
-      : ''
-  const actualNote =
-    payload.actual_move_analysis && payload.actual_move_analysis.summary
-      ? `\n实走推演：${payload.actual_move_analysis.summary}`
-      : ''
+  const top1 = cands[0] || null
+  const pieceName = extractPlainPieceName(top1)
+  const wr = Number(payload.win_rate || 50).toFixed(1)
+
+  let answer = ''
+  if (typeof payload.win_rate_delta === 'number' && payload.win_rate_delta < -15) {
+    answer = `这步走亏了，胜率掉了${Math.abs(payload.win_rate_delta).toFixed(1)}%，有子没护住容易被白吃。刚才改走【${pieceName}】会更稳妥。`
+  } else if (top1) {
+    answer = `当前我方胜率约${wr}%，局面还能稳住。接下来优先考虑动【${pieceName}】护好阵型并找机会吃子。`
+  } else {
+    answer = `当前我方胜率约${wr}%，这盘关键胜负已经在前面几步分出高下了。`
+  }
 
   return {
-    answer: `（本地引擎离线复盘）针对「${moveLabel}」，当前我方胜率 ${Number(payload.win_rate || 50).toFixed(1)}%。${deltaNote}${actualNote}\n引擎推荐变例：\n${bestLine}`,
+    answer: answer.slice(0, 80),
     persona_id: payload.persona_id || 'deepseek_master',
     model_provider: 'fallback',
     model_name: 'engine_coach_local',

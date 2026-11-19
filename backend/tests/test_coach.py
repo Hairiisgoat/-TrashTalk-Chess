@@ -159,8 +159,10 @@ def test_coach_ask_falls_back_cleanly_on_upstream_error() -> None:
     data = resp.json()
     assert data["is_fallback"] is True
     assert data["fallback_reason"] == "llm_api_error"
-    assert "Nc6" in data["answer"]
+    assert "【马】" in data["answer"]
+    assert "Nc6" not in data["answer"]
     assert "18.5%" in data["answer"]
+    assert len(data["answer"]) <= 80
 
 
 def test_coach_ask_validates_fen_and_unconfigured_provider() -> None:
@@ -192,7 +194,7 @@ def test_langgraph_coach_workflow_synthesizes_pv_tactics_and_routes_questions() 
                 "choices": [
                     {
                         "message": {
-                            "content": "针对白后 h5e5（吃兵后反丢后），属于典型的漏防丢子；若改走马d2，虽经历一换一兑子但能保住先手。"
+                            "content": "你的【后】直接跑到中间吃小兵却没东西保护，被对方的【车】白吃掉了。刚才应该先把右边的【马】跳出来护住中间。"
                         }
                     }
                 ]
@@ -255,20 +257,22 @@ def test_langgraph_coach_workflow_synthesizes_pv_tactics_and_routes_questions() 
 
         diag_sys = captured_requests[0]["messages"][0]["content"]
         diag_usr = captured_requests[0]["messages"][1]["content"]
-        assert "后续 2 步攻防变化" in diag_sys
-        assert "一换一兑子" in diag_sys
-        assert "单步诊断" in diag_usr
+        assert "严禁出现任何棋盘坐标代号与专业黑话" in diag_sys
+        assert "简明因果体" in diag_sys
+        assert "80 字" in diag_sys
+        assert "大白话" in diag_usr
         assert "白丢大子" in diag_usr
         assert "1. 马g1-f3 -> 2. 马b8-c6 -> 3. 象f1-c4" in diag_usr
+        assert len(d1["answer"]) <= 80
 
-        # 验证条件路由：最佳变例推演 & 全局总结
+        # 验证条件路由：最佳走法大白话讲解 & 全局大白话总结
         r_best = client.post(
             "/api/v1/ai/coach/ask",
             json={**pv_payload, "question": "基于当前局面，引擎推荐的最佳主变怎么走？"},
         )
         assert r_best.status_code == 200
         assert r_best.json()["question_type"] == "best_line_pv"
-        assert "最佳变例推演" in captured_requests[1]["messages"][1]["content"]
+        assert "最佳走法大白话讲解" in captured_requests[1]["messages"][1]["content"]
 
         r_sum = client.post(
             "/api/v1/ai/coach/ask",
@@ -276,7 +280,7 @@ def test_langgraph_coach_workflow_synthesizes_pv_tactics_and_routes_questions() 
         )
         assert r_sum.status_code == 200
         assert r_sum.json()["question_type"] == "global_summary"
-        assert "全局胜负手总结" in captured_requests[2]["messages"][1]["content"]
+        assert "全局大白话总结" in captured_requests[2]["messages"][1]["content"]
 
 
 def test_langgraph_coach_what_if_routing_and_multiturn_chat_history_on_anthropic() -> None:
@@ -331,3 +335,31 @@ def test_langgraph_coach_what_if_routing_and_multiturn_chat_history_on_anthropic
     assert captured_body["messages"][2]["role"] == "user"
     assert "自由假设追问" in captured_body["messages"][2]["content"]
     assert "如果他不跟我换子" in captured_body["messages"][2]["content"]
+    assert len(data["answer"]) <= 80
+
+
+def test_coach_clamps_overlong_llm_answer_to_80_chars() -> None:
+    long_reply = (
+        "你的【车】没有棋子保护，直接被对方的【马】白吃掉了。"
+        "刚才其实应该先挪动底线的【车】护住侧翼，不要急着往前冲。"
+        "接下来如果再不回防，另一边的小兵也会跟着丢掉，整盘局面就会非常被动。"
+    )
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": long_reply}}]},
+        )
+
+    app = create_app()
+    mock_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app.dependency_overrides[get_settings] = lambda: _settings()
+    app.dependency_overrides[get_http_client] = lambda: mock_client
+
+    with TestClient(app) as client:
+        resp = client.post("/api/v1/ai/coach/ask", json=COACH_PAYLOAD)
+
+    assert resp.status_code == 200
+    answer = resp.json()["answer"]
+    assert len(answer) <= 80
+    assert answer.endswith("。")

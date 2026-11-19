@@ -222,11 +222,10 @@ def test_prompt_reflects_difficulty_and_win_rate_delta() -> None:
         "difficulty": "easy",
         "win_rate_delta": 18.0,
         "candidates": [
-            {"uci": "e7e5", "score_cp": -15, "notation": "e5", "is_capture": False, "is_check": False, "tactics_tags": ["节奏放缓"]},
-            {"uci": "c7c5", "score_cp": -45, "notation": "c5", "is_capture": False, "is_check": False, "tactics_tags": ["节奏放缓"]},
-            {"uci": "g8f6", "score_cp": -85, "notation": "Nf6", "is_capture": False, "is_check": False, "tactics_tags": ["节奏放缓"]},
-            {"uci": "a7a6", "score_cp": -105, "notation": "a6", "is_capture": False, "is_check": False, "tactics_tags": ["节奏放缓"]},
-            {"uci": "f7f5", "score_cp": -210, "notation": "f5", "is_capture": False, "is_check": False, "tactics_tags": ["大意漏防"]},
+            {"uci": "e7e5", "score_cp": 10, "notation": "e5", "is_capture": False, "is_check": False, "tactics_tags": ["正常稳健"]},
+            {"uci": "c7c5", "score_cp": 0, "notation": "c5", "is_capture": False, "is_check": False, "tactics_tags": ["正常稳健"]},
+            {"uci": "g8f6", "score_cp": -22, "notation": "Nf6", "is_capture": False, "is_check": False, "tactics_tags": ["节奏放缓"]},
+            {"uci": "a7a6", "score_cp": -42, "notation": "a6", "is_capture": False, "is_check": False, "tactics_tags": ["节奏放缓"]},
         ],
     }
     medium_req = MoveRequest.model_validate({**CHESS_PAYLOAD, "difficulty": "medium", "win_rate_delta": 0.0})
@@ -245,9 +244,10 @@ def test_prompt_reflects_difficulty_and_win_rate_delta() -> None:
     sys_prompt = get_system_prompt("deepseek_master")
 
     assert "15 个汉字以内" in sys_prompt
+    assert "正常稳健" in easy_prompt
     assert "节奏放缓" in easy_prompt
-    assert "大意漏防" in easy_prompt
-    assert "严禁每步都挑最高分走法" in easy_prompt
+    assert "自然交替选择" in easy_prompt
+    assert "大意漏防" not in easy_prompt
     assert "15个汉字以内" in easy_prompt
     assert "+18.0%" in easy_prompt
 

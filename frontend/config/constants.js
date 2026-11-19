@@ -31,7 +31,7 @@ export const DIFFICULTIES = [
     id: 'casual',
     label: '娱乐放水',
     shortLabel: '简单',
-    desc: '混合中下游与偶发漏招，留足反击空间（depth=2）',
+    desc: '正常防守与温和缓手交替，与中等平滑衔接（depth=2）',
     searchDepth: 2,
     tagColor: '#10B981'
   },

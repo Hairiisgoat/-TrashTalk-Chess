@@ -1,7 +1,7 @@
 /**
  * 候选步分级采样策略：按难度梯度控制提交给大模型的候选池与战术标签
- * - casual / easy（简单）：混合候选池（1个第3~4名常规步 + 2~3个第6~12名(-30~-120cp)平庸步 + 1个非送王漏招），标为 ["节奏放缓"] / ["大意漏防"]
- * - balanced / medium（中等）：传第2~6名稳健与次优走法，屏蔽第1名绝对杀招（除非必杀局）
+ * - casual / easy（简单）：4~5 步温和候选池（2 个第 2~3 名正常稳健走法 + 2~3 个第 4~7 名略亏 -15~-50cp 的平庸缓手，标签 ["正常稳健"] / ["节奏放缓"]），严禁强塞大亏分送子漏招
+ * - balanced / medium（中等）：传第 2~6 名稳健与次优走法，屏蔽第 1 名绝对杀招（除非必杀局）
  * - tryhard / hard / master（困难/大师）：仅传分差 ≤ 50cp 的 Top-1 ~ Top-3 最优候选步
  */
 
@@ -34,95 +34,112 @@ function addUniqueMove(picked, tagsByUci, seen, move, tags) {
   return true
 }
 
-function pickEasyMixedPool(rankedMoves, rootScores, mateThreshold) {
+function pickEasyGentlePool(rankedMoves, rootScores, mateThreshold) {
   const bestScore = getMoveScore(rootScores, rankedMoves[0])
   const safeMateFloor = -mateThreshold
-  const targetTotal = Math.min(6, rankedMoves.length)
+  const targetTotal = Math.min(5, rankedMoves.length)
+  const minDesired = Math.min(4, rankedMoves.length)
 
   const picked = []
   const tagsByUci = new Map()
   const seen = new Set()
 
-  // 1. 1 个排名第 3~4 的常规步（下标 2 或 3，不足时向内退让）
-  const steadyOrder = [2, 3, 1, 0].filter((idx) => idx < rankedMoves.length)
-  for (const idx of steadyOrder) {
-    const m = rankedMoves[idx]
-    if (getMoveScore(rootScores, m) > safeMateFloor || idx === steadyOrder[steadyOrder.length - 1]) {
-      addUniqueMove(picked, tagsByUci, seen, m, ['节奏放缓'])
-      break
-    }
+  // 若仅有极少数合法走法或被迫解将，确保必保王安全
+  if (rankedMoves.length <= 2) {
+    rankedMoves.forEach((m, idx) => {
+      addUniqueMove(picked, tagsByUci, seen, m, [idx === 0 ? '正常稳健' : '节奏放缓'])
+    })
+    return { selectedMoves: picked, tagsByUci }
   }
 
-  // 2. 2~3 个排名中游（第 6~12 名、分差略亏 30~120 cp）的平庸步
-  const midTargetCount = Math.min(3, Math.max(0, targetTotal - 2))
-  const midSlice = rankedMoves.slice(5, 12)
-  const primaryMid = midSlice.filter((m) => {
+  // 1. 选取 2 个排名第 2~3 名的正常稳健走法（下标 1、2），保证基础看吃与防守意识
+  const steadyIndices = [1, 2].filter((idx) => idx < rankedMoves.length)
+  let steadyAdded = 0
+  for (const idx of steadyIndices) {
+    const m = rankedMoves[idx]
     const sc = getMoveScore(rootScores, m)
     const delta = sc - bestScore
-    return !seen.has(m.uci) && sc > safeMateFloor && delta <= -30 && delta >= -120
-  })
-  const fallbackMidRange = rankedMoves.slice(2).filter((m) => {
-    const sc = getMoveScore(rootScores, m)
-    const delta = sc - bestScore
-    return !seen.has(m.uci) && sc > safeMateFloor && delta <= -30 && delta >= -120
-  })
-  const fallbackMidGentle = rankedMoves
-    .slice(2)
-    .filter((m) => {
-      const sc = getMoveScore(rootScores, m)
-      const delta = sc - bestScore
-      return !seen.has(m.uci) && sc > safeMateFloor && delta >= -160
-    })
-    .sort((a, b) => {
-      const da = Math.abs(getMoveScore(rootScores, a) - bestScore + 75)
-      const db = Math.abs(getMoveScore(rootScores, b) - bestScore + 75)
-      return da - db
-    })
-
-  let midAdded = 0
-  for (const pool of [primaryMid, fallbackMidRange, fallbackMidGentle]) {
-    for (const m of pool) {
-      if (midAdded >= midTargetCount) break
-      if (addUniqueMove(picked, tagsByUci, seen, m, ['节奏放缓'])) {
-        midAdded++
+    // 仅当该步非送王且未严重送大子（delta >= -90）时作为稳健步；否则回退至排名第 1 步保底防守
+    if (sc > safeMateFloor && delta >= -90) {
+      if (addUniqueMove(picked, tagsByUci, seen, m, ['正常稳健'])) {
+        steadyAdded++
       }
     }
-    if (midAdded >= midTargetCount) break
+  }
+  if (steadyAdded === 0) {
+    addUniqueMove(picked, tagsByUci, seen, rankedMoves[0], ['正常稳健'])
+    steadyAdded++
   }
 
-  // 3. 1 个非送王但存在局部破绽的“漏招”（若存在：非绝杀、比最优低 125~420 cp）
-  const blunderCandidates = rankedMoves
-    .slice(3)
+  // 2. 选取 2 个（最多 3 个以组成 4~5 步温和池）排名第 4~7 名、分差略亏 -15 ~ -50 cp 的平庸缓手
+  const slowDesired = Math.min(2, Math.max(0, targetTotal - picked.length))
+  const slowCap = Math.min(3, Math.max(slowDesired, targetTotal - picked.length))
+  const rank4To7 = rankedMoves.slice(3, 7)
+
+  const primarySlow = rank4To7.filter((m) => {
+    const sc = getMoveScore(rootScores, m)
+    const delta = sc - bestScore
+    return !seen.has(m.uci) && sc > safeMateFloor && delta <= -15 && delta >= -50
+  })
+  const extendedSlowRange = rankedMoves.slice(3).filter((m) => {
+    const sc = getMoveScore(rootScores, m)
+    const delta = sc - bestScore
+    return !seen.has(m.uci) && sc > safeMateFloor && delta <= -15 && delta >= -50
+  })
+  // 若局部无严格落在 -15~-50cp 的走法，优先在温和区 [-75, 0] 内就近选，严禁抓取 <= -120cp 的白送大子漏招
+  const gentleFallback = rank4To7
+    .concat(rankedMoves.slice(7))
     .filter((m) => {
       const sc = getMoveScore(rootScores, m)
       const delta = sc - bestScore
-      return !seen.has(m.uci) && sc > safeMateFloor && delta < -120 && delta >= -420
+      return !seen.has(m.uci) && sc > safeMateFloor && delta >= -75
     })
     .sort((a, b) => {
-      const da = Math.abs(getMoveScore(rootScores, a) - bestScore + 210)
-      const db = Math.abs(getMoveScore(rootScores, b) - bestScore + 210)
+      const da = Math.abs(getMoveScore(rootScores, a) - bestScore + 32)
+      const db = Math.abs(getMoveScore(rootScores, b) - bestScore + 32)
       return da - db
     })
 
-  if (blunderCandidates.length > 0 && picked.length < targetTotal) {
-    addUniqueMove(picked, tagsByUci, seen, blunderCandidates[0], ['大意漏防'])
+  let slowAdded = 0
+  // 主池允许凑齐 2~3 步（总池 4~5 步）；回退池仅补足到至少 2 步平庸缓手
+  for (const m of primarySlow) {
+    if (slowAdded >= slowCap || picked.length >= targetTotal) break
+    if (addUniqueMove(picked, tagsByUci, seen, m, ['节奏放缓'])) {
+      slowAdded++
+    }
+  }
+  for (const pool of [extendedSlowRange, gentleFallback]) {
+    if (slowAdded >= slowDesired) break
+    for (const m of pool) {
+      if (slowAdded >= slowDesired || picked.length >= targetTotal) break
+      if (addUniqueMove(picked, tagsByUci, seen, m, ['节奏放缓'])) {
+        slowAdded++
+      }
+    }
   }
 
-  // 4. 若候选数量不足 5 个，先从中下游非送王走法补足，最后才兜底极少步局面
-  const minDesired = Math.min(5, rankedMoves.length)
+  // 3. 若因局面极其尖锐（几乎只剩少数不亏大子的应手）导致候选不足 4 个，仅补足温和走法，必要时纳入第 1 名避免塞入送子恶手
   if (picked.length < minDesired) {
-    const nonMateFallback = rankedMoves
-      .slice(2)
-      .filter((m) => !seen.has(m.uci) && getMoveScore(rootScores, m) > safeMateFloor)
-    for (const m of nonMateFallback) {
-      if (picked.length >= targetTotal) break
+    const safeRemaining = rankedMoves
+      .slice(1)
+      .filter((m) => {
+        const sc = getMoveScore(rootScores, m)
+        return !seen.has(m.uci) && sc > safeMateFloor && sc - bestScore >= -85
+      })
+    for (const m of safeRemaining) {
+      if (picked.length >= minDesired) break
       addUniqueMove(picked, tagsByUci, seen, m, ['节奏放缓'])
     }
+  }
+  if (picked.length < minDesired && !seen.has(rankedMoves[0].uci)) {
+    addUniqueMove(picked, tagsByUci, seen, rankedMoves[0], ['正常稳健'])
   }
   if (picked.length < minDesired) {
     for (const m of rankedMoves) {
       if (picked.length >= minDesired) break
-      addUniqueMove(picked, tagsByUci, seen, m, ['节奏放缓'])
+      if (getMoveScore(rootScores, m) > safeMateFloor) {
+        addUniqueMove(picked, tagsByUci, seen, m, ['节奏放缓'])
+      }
     }
   }
 
@@ -183,7 +200,7 @@ export function pickTieredCandidatesWithTags(rankedMoves, rootScores, options = 
   const bestEvalCp = getMoveScore(rootScores, rankedMoves[0])
 
   if (normalized === 'casual') {
-    const res = pickEasyMixedPool(rankedMoves, rootScores, mateThreshold)
+    const res = pickEasyGentlePool(rankedMoves, rootScores, mateThreshold)
     return { ...res, bestEvalCp }
   }
   if (normalized === 'tryhard') {

@@ -125,63 +125,144 @@ def build_tactical_comparison_summary(req: CoachAskRequest) -> str:
     return "\n".join(lines)
 
 
+MAX_COACH_ANSWER_LENGTH = 80
+
+_CN_PIECE_RE = re.compile(r"[王后车象相马炮兵卒仕士帅将]")
+_CHESS_SAN_TO_CN: dict[str, str] = {
+    "K": "王",
+    "Q": "后",
+    "R": "车",
+    "B": "象",
+    "N": "马",
+}
+_CHESS_FEN_TO_CN: dict[str, str] = {
+    "k": "王",
+    "q": "后",
+    "r": "车",
+    "b": "象",
+    "n": "马",
+    "p": "小兵",
+}
+_XIANGQI_FEN_TO_CN: dict[str, str] = {
+    "K": "帅",
+    "k": "将",
+    "A": "仕",
+    "a": "士",
+    "B": "相",
+    "b": "象",
+    "N": "马",
+    "n": "马",
+    "R": "车",
+    "r": "车",
+    "C": "炮",
+    "c": "炮",
+    "P": "兵",
+    "p": "卒",
+}
+
+
+def _extract_plain_piece_name(req: CoachAskRequest, cand: object | None) -> str:
+    """Translate a candidate move into a plain Chinese piece label with no coordinates."""
+    if cand is None:
+        return "主力棋子"
+    pv = getattr(cand, "pv", None) or []
+    notation = (getattr(cand, "notation", None) or "").strip()
+    for text in (pv[0] if pv else "", notation):
+        matched = _CN_PIECE_RE.search(text)
+        if matched:
+            return matched.group(0)
+    if notation:
+        if notation[0] in _CHESS_SAN_TO_CN:
+            return _CHESS_SAN_TO_CN[notation[0]]
+        if notation.startswith("O-O"):
+            return "王和车"
+        if "a" <= notation[0] <= "h":
+            return "小兵"
+
+    uci = (getattr(cand, "uci", None) or "").strip().lower()
+    if len(uci) >= 2 and "a" <= uci[0] <= "i" and uci[1].isdigit():
+        rows = req.fen.split()[0].split("/")
+        col = ord(uci[0]) - ord("a")
+        row = (8 - int(uci[1])) if req.game_type.value == "chess" else (9 - int(uci[1]))
+        if 0 <= row < len(rows):
+            expanded: list[str | None] = []
+            for ch in rows[row]:
+                if ch.isdigit():
+                    expanded.extend([None] * int(ch))
+                else:
+                    expanded.append(ch)
+            if 0 <= col < len(expanded) and expanded[col]:
+                piece_ch = expanded[col]
+                if req.game_type.value == "chess":
+                    return _CHESS_FEN_TO_CN.get(piece_ch.lower(), "主力棋子")
+                return _XIANGQI_FEN_TO_CN.get(piece_ch, "主力棋子")
+    return "主力棋子"
+
+
+def _clamp_coach_answer(text: str, max_len: int = MAX_COACH_ANSWER_LENGTH) -> str:
+    """Ensure coach reply stays strictly concise (<= 80 chars, preferring sentence boundaries)."""
+    cleaned = " ".join((text or "").strip().split())
+    if len(cleaned) <= max_len:
+        return cleaned
+    window = cleaned[:max_len]
+    for sep in ("。", "！", "？"):
+        cut = window.rfind(sep)
+        if cut >= max_len // 2:
+            return window[: cut + 1]
+    return window[: max_len - 1] + "…"
+
+
 def _build_coach_fallback_answer(
     req: CoachAskRequest,
     persona_name: str,
     tactical_comparison: str | None = None,
 ) -> str:
-    """Deterministic engine-grounded fallback answer when upstream LLM fails/times out."""
-    move_label = req.last_move_notation or "当前开局"
-    lines = [
-        f"（{persona_name} · 引擎客观复盘速览）当前我方胜率约 {req.win_rate:.1f}%。",
-    ]
-    if req.win_rate_delta is not None and req.win_rate_delta < -15:
-        lines.append(
-            f"刚才这步「{move_label}」让胜率骤降 {req.win_rate_delta:.1f}%，属于明显失误步，容易丢失先手或漏防丢子。"
-        )
-    elif req.last_move_notation:
-        lines.append(f"针对刚刚的「{move_label}」（当前盘面评估 {req.score_cp:+d} cp）：")
-
-    if tactical_comparison:
-        lines.append(tactical_comparison)
-
+    """Deterministic plain-language fallback answer (<= 80 chars, zero jargon/coords)."""
+    del persona_name, tactical_comparison
     target_cands = req.alternative_candidates or req.top_candidates
-    if target_cands:
-        top1 = target_cands[0]
-        pv_desc = f"，预期主变：{' -> '.join(top1.pv)}" if top1.pv else ""
-        tags_desc = f"（{'、'.join(top1.tactics_tags)}）" if top1.tactics_tags else ""
-        top_str = "、".join(
-            f"{c.notation or c.uci}({c.score_cp:+d})" for c in target_cands[:3]
-        )
-        lines.append(
-            f"本地引擎演算的最优推荐变例为：{top_str}；其中首选「{top1.notation or top1.uci}」{tags_desc}最稳妥{pv_desc}。"
-        )
-    else:
-        lines.append("当前局面已无合法后续着法，胜负手已在前序关键回合分晓。")
+    top1 = target_cands[0] if target_cands else None
+    piece_name = _extract_plain_piece_name(req, top1)
 
-    return "\n".join(lines)[:1950]
+    if req.win_rate_delta is not None and req.win_rate_delta < -15:
+        drop = abs(req.win_rate_delta)
+        actual = req.actual_move_analysis
+        if actual and actual.captured_by_opponent:
+            cause = "有棋子没护住容易被对方吃掉"
+        else:
+            cause = "这步走亏了容易漏防丢子"
+        advice = f"刚才改走【{piece_name}】护住阵型会更稳。" if top1 else "前面几步防守没衔接上。"
+        return _clamp_coach_answer(f"{cause}，胜率掉了{drop:.1f}%。{advice}")
+
+    if top1 is not None:
+        action = "直接吃子或盯住对面" if (top1.is_capture or top1.is_check) else "稳住防守再找机会"
+        return _clamp_coach_answer(
+            f"当前你这边胜率约{req.win_rate:.1f}%，局势还能稳住。接下来优先动【{piece_name}】，{action}。"
+        )
+    return _clamp_coach_answer(
+        f"当前胜率约{req.win_rate:.1f}%，盘面已经定局，胜负在前几步丢子时就分晓了。"
+    )
 
 
 _STRATEGY_INSTRUCTIONS: dict[QuestionType, str] = {
     "step_diagnosis": (
-        "【当前路由策略：单步诊断】\n"
-        "1. 紧扣实走与引擎正解的对比，明确点出具体棋子走法及后续 2 步攻防变化。\n"
-        "2. 结合战术标签与子力净变化，直白解释属于“一换一兑子 / 弃子争先 / 漏防丢子 / 中心控制”中的哪种情形，点明为什么强或为什么亏。"
+        "【当前路由策略：单步大白话诊断】\n"
+        "1. 严格用“简明因果体”写 2~3 句话（总计 ≤80 字）：直说这步哪里亏了/赚了（比如哪颗子没护住被白吃，或者漏了哪边防守），再说刚才改走哪颗子往哪挪更好。\n"
+        "2. 严禁出现任何棋盘坐标（如 e2-e4、Nf3、炮二平五）及专业黑话（如先手、弃子争先、弱格、主变线）。"
     ),
     "best_line_pv": (
-        "【当前路由策略：最佳变例推演 (PV)】\n"
-        "1. 按候选顺序拆解引擎 Top-1（必要时补充 Top-2）的主变线 `1. ... -> 2. ... -> 3. ...`。\n"
-        "2. 逐手说明第 1 步如何抢先/攻杀、第 2 步对手的被迫应招、第 3 步如何兑子获利或稳固优势。"
+        "【当前路由策略：最佳走法大白话讲解】\n"
+        "1. 用 ≤80 字（最多 3 句话）把引擎推荐的后续走法翻译成大白话：直接告诉玩家先动哪颗子、对面接着会怎么躲或吃、我方怎么顺势占便宜。\n"
+        "2. 严禁出现任何坐标代号或专业棋谱黑话。"
     ),
     "what_if_followup": (
-        "【当前路由策略：自由假设追问 (What-If 分支推演)】\n"
-        "1. 承接历史对话上下文，直接回应玩家的假设场景（如“如果对手不跟我换子 / 为什么要避开某着”）。\n"
-        "2. 结合候选主变与盘面子力结构，推演若对手拒兑或改走其他应对后，接下来 2 步我方如何趁势抢攻、捉双或顺势兑子占优。"
+        "【当前路由策略：自由假设追问 · 大白话简答】\n"
+        "1. 承接前面对话，用 ≤80 字（最多 3 句话）直白回答玩家的假设：说清对面如果不按套路走、改躲或改吃，我方顺手动哪颗子能占到便宜。\n"
+        "2. 严禁出现任何坐标代号或专业黑话。"
     ),
     "global_summary": (
-        "【当前路由策略：全局胜负手总结】\n"
-        "1. 结合全盘关键转折点与战犯步摘要，梳理整盘优势建立与失势的关键回合。\n"
-        "2. 用通俗棋理概括 2~3 条可落地的改进建议（如子力配合、弃子/兑子时机、防守意识）。"
+        "【当前路由策略：全局大白话总结】\n"
+        "1. 用 ≤80 字（最多 3 句话）指出整盘棋最亏的那一下出在哪（哪颗大子没护住或走急了），并给 1 条普通玩家马上能用上的避坑建议。\n"
+        "2. 严禁出现任何坐标代号或专业黑话。"
     ),
 }
 
@@ -295,7 +376,7 @@ class CoachService:
                     user_prompt=state["user_prompt"],
                     history_messages=state.get("history_messages"),
                     temperature=0.6,
-                    max_tokens=850,
+                    max_tokens=300,
                     api_key_override=api_key_override,
                     base_url_override=base_url_override,
                 ),
@@ -330,7 +411,7 @@ class CoachService:
             }
 
         return {
-            "raw_answer": cleaned[:1950],
+            "raw_answer": _clamp_coach_answer(cleaned),
             "is_fallback": False,
             "fallback_reason": None,
         }
